@@ -1,0 +1,9 @@
+# Condition 2: the same real COCO images, labeled by the teacher instead of humans.
+# Isolates the cost of teacher label noise from the synthetic domain gap.
+base: base.yaml
+condition: teacher_real
+teacher: owlv2
+teacher_threshold: 0.3
+train:
+  sources:
+    - {ann: "labels/{teacher}/train2017_{prompt}_t{teacher_threshold}.json", images: coco/train2017}

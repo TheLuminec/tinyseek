@@ -1,0 +1,7 @@
+# Condition 4: synthetic (teacher-labeled) plus real (ground-truth) images.
+base: synth_only.yaml
+condition: synth_real
+train:
+  sources:
+    - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}.json", images: "synthetic/{prompt}/{synth_set}"}
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017}

@@ -1,0 +1,6 @@
+# Condition 1: real COCO images with human (ground-truth) labels.
+base: base.yaml
+condition: real_only
+train:
+  sources:
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017}

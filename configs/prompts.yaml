@@ -1,0 +1,40 @@
+# Target prompts. Each maps to exactly one COCO category so the standard
+# COCO-style mAP@0.5 evaluation applies.
+#
+#   coco_id:       COCO category id (instances_*.json)
+#   teacher_text:  text query given to the open-vocabulary teacher
+#   sd_templates:  Stable Diffusion prompt templates; {scene} is filled from `scenes`
+prompts:
+  person:
+    coco_id: 1
+    teacher_text: "a person"
+    sd_templates:
+      - "a photo of a person {scene}"
+      - "a low quality webcam photo of a person {scene}"
+      - "a person walking {scene}, security camera footage"
+  cup:
+    coco_id: 47
+    teacher_text: "a cup"
+    sd_templates:
+      - "a photo of a cup {scene}"
+      - "a low quality webcam photo of a mug {scene}"
+      - "a coffee cup {scene}, cluttered, amateur photo"
+  backpack:
+    coco_id: 27
+    teacher_text: "a backpack"
+    sd_templates:
+      - "a photo of a backpack {scene}"
+      - "a low quality webcam photo of a backpack {scene}"
+      - "a person wearing a backpack {scene}, amateur photo"
+
+scenes:
+  - "on a kitchen table"
+  - "on an office desk"
+  - "in a living room"
+  - "in a classroom"
+  - "on the floor of a bedroom"
+  - "in a hallway"
+  - "outdoors on a sidewalk"
+  - "in a cafe"
+  - "next to a window"
+  - "in dim indoor lighting"
