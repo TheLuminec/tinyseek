@@ -22,8 +22,8 @@ from torch.utils.data import DataLoader
 
 from tinyseek.config import fill, load_config, load_prompts
 from tinyseek.data.dataset import DetectionDataset, collate_eval, load_coco_records
-from tinyseek.eval.metrics import coco_ap50
 from tinyseek.eval.evaluate import predict
+from tinyseek.eval.metrics import coco_ap50
 from tinyseek.train.model import IMAGENET_MEAN, IMAGENET_STD, ExportWrapper, build_model
 from tinyseek.train.train import load_sources
 
