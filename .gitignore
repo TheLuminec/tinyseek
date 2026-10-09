@@ -1,6 +1,6 @@
 # Data, models, and run outputs are never committed; see README for how to regenerate them.
 /data
-runs/
+/runs
 checkpoints/
 *.pt
 *.pth

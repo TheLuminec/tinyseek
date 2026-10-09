@@ -89,20 +89,41 @@ def expected_calibration_error(scores: np.ndarray, is_tp: np.ndarray, num_bins: 
     return float(ece)
 
 
-def coco_ap50(gt_json: str, detections: list[dict], category_id: int) -> float:
-    """Standard COCO AP at IoU 0.5 (pycocotools), restricted to one category."""
+def coco_ap50_by_area(
+    gt_json: str, detections: list[dict], category_id: int, image_ids: list[int] | None = None
+) -> dict[str, float]:
+    """COCO AP at IoU 0.5 (pycocotools) overall and per COCO object-size range.
+
+    Size ranges are COCO's, in original-image pixels: small < 32^2 <= medium < 96^2 <= large.
+    At a 128 px model input most "small" COCO objects shrink below a few pixels.
+    """
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
 
+    names = ("all", "small", "medium", "large")
     if not detections:
-        return 0.0
+        return {n: 0.0 for n in names}
     with contextlib.redirect_stdout(io.StringIO()):
         gt = COCO(gt_json)
         dt = gt.loadRes([dict(d, category_id=category_id) for d in detections])
         ev = COCOeval(gt, dt, iouType="bbox")
         ev.params.catIds = [category_id]
-        ev.params.maxDets = [1, 10, 100]
+        if image_ids is not None:
+            ev.params.imgIds = image_ids
+        ev.params.iouThrs = np.array([0.5])
+        ev.params.maxDets = [100]
         ev.evaluate()
         ev.accumulate()
-        ev.summarize()
-    return float(ev.stats[1])
+    # precision: [iou, recall, category, area, maxDets]; -1 marks "no ground truth".
+    out = {}
+    for a, name in enumerate(names):
+        p = ev.eval["precision"][0, :, 0, a, 0]
+        out[name] = float(p[p > -1].mean()) if (p > -1).any() else float("nan")
+    return out
+
+
+def coco_ap50(
+    gt_json: str, detections: list[dict], category_id: int, image_ids: list[int] | None = None
+) -> float:
+    """Standard COCO AP at IoU 0.5 (pycocotools), restricted to one category (and optionally images)."""
+    return coco_ap50_by_area(gt_json, detections, category_id, image_ids)["all"]

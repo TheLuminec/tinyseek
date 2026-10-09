@@ -17,14 +17,14 @@ prompts:
     teacher_text: "a cup"
     sd_templates:
       - "a photo of a cup {scene}"
-      - "a low quality webcam photo of a mug {scene}"
+      - "a mug {scene}, photo taken with a cheap phone camera"
       - "a coffee cup {scene}, cluttered, amateur photo"
   backpack:
     coco_id: 27
     teacher_text: "a backpack"
     sd_templates:
       - "a photo of a backpack {scene}"
-      - "a low quality webcam photo of a backpack {scene}"
+      - "a backpack {scene}, photo taken with a cheap phone camera"
       - "a person wearing a backpack {scene}, amateur photo"
 
 scenes:

@@ -1,0 +1,21 @@
+# Synthetic image generation (tinyseek.generate.sample).
+# Output: data/synthetic/<prompt>/<synth_set>/{000000.jpg, ..., metadata.jsonl, config.yaml}
+seed: 0
+prompt: cup
+data_root: data
+synth_set: sd15_lcm_v0            # bump the suffix whenever generation settings change
+
+base_model: stable-diffusion-v1-5/stable-diffusion-v1-5
+# Few-step sampling: Pascal GPUs have no fast fp16, so generation runs in fp32 and
+# LCM-LoRA (4-8 steps) is what makes thousands of images per prompt affordable.
+lcm_lora: latent-consistency/lcm-lora-sdv1-5
+domain_lora: null                 # path to the ESP32-camera-style LoRA once trained
+domain_lora_scale: 0.8
+
+num_images: 2000
+resolution: 512
+steps: 6
+guidance_scale: 1.5               # LCM works best with little or no CFG
+batch_size: 4
+dtype: float32
+negative_prompt: "cartoon, drawing, illustration, text, watermark, deformed"

@@ -17,7 +17,7 @@ from tinyseek.config import fill, load_config, load_prompts
 from tinyseek.data.dataset import DetectionDataset, Record, collate_eval, load_coco_records
 from tinyseek.eval.metrics import (
     average_precision,
-    coco_ap50,
+    coco_ap50_by_area,
     expected_calibration_error,
     match_detections,
 )
@@ -71,8 +71,12 @@ def evaluate_set(
     )
     gt = {r.image_id: np.column_stack([r.boxes[:, :2], r.boxes[:, 2:] - r.boxes[:, :2]]) for r in records}
     scores, tp, num_gt = match_detections(dets, gt, ev["iou_threshold"])
+    by_area = coco_ap50_by_area(ann_file, dets, category_id)
     return {
-        "ap50": coco_ap50(ann_file, dets, category_id),
+        "ap50": by_area["all"],
+        "ap50_small": by_area["small"],
+        "ap50_medium": by_area["medium"],
+        "ap50_large": by_area["large"],
         "ap50_ref": average_precision(scores, tp, num_gt),
         "ece": expected_calibration_error(scores, tp, ev["ece_bins"]),
         "num_images": len(records),
