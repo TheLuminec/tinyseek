@@ -1,0 +1,9 @@
+# Pipeline smoke test (a few minutes): small real-only run. Not an experiment condition.
+#   python -m tinyseek.train.train --config configs/smoke.yaml prompt=cup
+base: real_only.yaml
+condition: smoke
+train:
+  sources:
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017, max_images: 1024}
+  epochs: 3
+  warmup_epochs: 1

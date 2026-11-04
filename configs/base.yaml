@@ -1,0 +1,38 @@
+# Shared defaults. Per-condition configs set `base: base.yaml` and override.
+seed: 0
+prompt: cup                       # key in configs/prompts.yaml
+data_root: data
+run_root: runs
+
+model:
+  arch: centernet_mbv2
+  width_mult: 0.5
+  input_size: 128                 # square, letterboxed
+  output_stride: 8                # 16x16 heatmap at 128 px
+  head_channels: 48
+  pretrained: true                # ImageNet weights from timm (0.5 is the narrowest pretrained MBv2)
+
+train:
+  # Each entry is a COCO-format annotation file plus its image directory,
+  # relative to data_root. Conditions differ only in this list.
+  sources: []
+  epochs: 60
+  batch_size: 64
+  lr: 2.0e-3
+  weight_decay: 1.0e-4
+  warmup_epochs: 2
+  num_workers: 8
+  amp: false                      # Pascal GPUs gain nothing from fp16
+  augment:
+    hflip: 0.5
+    scale_jitter: [0.6, 1.4]
+    color_jitter: 0.3
+    sensor_noise: true            # Gaussian noise + JPEG + blur, ESP32-camera-like
+
+eval:
+  sets:
+    coco_val: {ann: "coco/subsets/val2017_{prompt}.json", images: coco/val2017}
+  score_threshold: 0.05
+  max_detections: 20
+  iou_threshold: 0.5
+  ece_bins: 10
