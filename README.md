@@ -19,8 +19,9 @@ student can be scored with standard COCO mAP@0.5).
 | mAP@0.5 (overall and by object size), ECE | `tinyseek.eval.evaluate` | working |
 | ESP32-S3 budget check | `tinyseek.train.budget` | working |
 | int8 ESP-DL export + int8 accuracy check | `tinyseek.train.export` | working |
+| ESP32 photo collection (interval capture to SD) | `firmware/capture` | written; not yet flashed |
 | ESP32-camera domain LoRA | — | needs ~200-300 photos from the board |
-| Firmware | `firmware/` | not started |
+| On-device detection firmware | `firmware/` | not started |
 
 ## Setup
 
