@@ -21,10 +21,20 @@
 static const uint32_t CAPTURE_INTERVAL_MS = 5000;     // time between photos
 static const framesize_t FRAME_SIZE = FRAMESIZE_SVGA; // 800x600; UXGA = 1600x1200 max
 static const int JPEG_QUALITY = 10;                   // 0-63, lower = better quality
-static const int WARMUP_FRAMES = 10;                  // dropped while exposure settles
+static const uint32_t WARMUP_MS = 4000;               // frames dropped while AEC/AWB settle
 static const uint32_t MAX_IMAGES = 0;                 // stop after this many; 0 = no limit
 static const bool VFLIP = true;                       // check the first photo and
 static const bool HMIRROR = false;                    // flip these if it is upside down
+
+// ---- Sensor tuning (OV2640) --------------------------------------------------
+// The library's defaults (2x gain ceiling, no DSP exposure) leave indoor shots dark,
+// and the auto white balance drifts green when the image is that underexposed.
+// The detector firmware must use these same values so training and deployment
+// images match; every value is written to session.txt.
+static const gainceiling_t GAIN_CEILING = GAINCEILING_16X;  // 2X..128X; higher = brighter, noisier
+static const int AE_LEVEL = 1;                              // exposure bias, -2..2
+static const bool AEC_DSP = true;                           // "aec2": DSP exposure, better in low light
+static const int WB_MODE = 0;  // 0 auto, 1 sunny, 2 cloudy, 3 office, 4 home (fixed presets)
 static const uint64_t MIN_FREE_BYTES = 4ULL * 1024 * 1024;
 static const char *ROOT_DIR = "/tinyseek";
 // -----------------------------------------------------------------------------
@@ -85,6 +95,18 @@ static bool initCamera() {
   sensor_t *s = esp_camera_sensor_get();
   s->set_vflip(s, VFLIP);
   s->set_hmirror(s, HMIRROR);
+  s->set_whitebal(s, 1);
+  s->set_awb_gain(s, 1);
+  s->set_wb_mode(s, WB_MODE);
+  s->set_exposure_ctrl(s, 1);
+  s->set_aec2(s, AEC_DSP);
+  s->set_ae_level(s, AE_LEVEL);
+  s->set_gain_ctrl(s, 1);
+  s->set_gainceiling(s, GAIN_CEILING);
+  s->set_bpc(s, 1);   // black-pixel correction
+  s->set_wpc(s, 1);   // white-pixel correction
+  s->set_lenc(s, 1);  // lens shading correction
+  s->set_raw_gma(s, 1);
   return true;
 }
 
@@ -121,8 +143,11 @@ static void writeSessionInfo() {
   f.printf("frame_size=%d\n", (int)FRAME_SIZE);
   f.printf("jpeg_quality=%d\n", JPEG_QUALITY);
   f.printf("interval_ms=%lu\n", (unsigned long)CAPTURE_INTERVAL_MS);
-  f.printf("warmup_frames=%d\n", WARMUP_FRAMES);
+  f.printf("warmup_ms=%lu\n", (unsigned long)WARMUP_MS);
   f.printf("vflip=%d\nhmirror=%d\n", VFLIP, HMIRROR);
+  f.printf("gainceiling=%dx\n", 2 << (int)GAIN_CEILING);
+  f.printf("ae_level=%d\naec_dsp=%d\nwb_mode=%d\n", AE_LEVEL, AEC_DSP, WB_MODE);
+  f.printf("awb=1\nawb_gain=1\nbpc=1\nwpc=1\nlenc=1\nraw_gma=1\n");
   f.close();
 
   snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
@@ -150,8 +175,8 @@ static bool captureOne() {
     snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
     File log = SD_MMC.open(path, FILE_APPEND);
     if (log) {
-      log.printf("%s,%lu,%u,%u,%u\n", name, (unsigned long)millis(), (unsigned)fb->width, (unsigned)fb->height,
-                 (unsigned)fb->len);
+      log.printf("%s,%lu,%u,%u,%u\n", name, (unsigned long)millis(), (unsigned)fb->width,
+                 (unsigned)fb->height, (unsigned)fb->len);
       log.close();
     }
     imageCount++;
@@ -195,10 +220,10 @@ void setup() {
   if (!SD_MMC.mkdir(sessionDir)) fail("cannot create session folder");
   writeSessionInfo();
 
-  for (int i = 0; i < WARMUP_FRAMES; i++) {
+  // Keep frames flowing so auto exposure and white balance converge before the first photo.
+  for (uint32_t start = millis(); millis() - start < WARMUP_MS;) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
-    delay(100);
   }
   Serial.printf("capturing to %s every %lu ms; BOOT button pauses\n", sessionDir,
                 (unsigned long)CAPTURE_INTERVAL_MS);
