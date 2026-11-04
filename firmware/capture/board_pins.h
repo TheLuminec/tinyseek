@@ -25,8 +25,12 @@
 #define SD_PIN_CMD 38
 #define SD_PIN_D0 40
 
-#define LED_PIN 2       // onboard LED; -1 to disable
-#define BUTTON_PIN 0    // BOOT button, active low; -1 to disable
+// Camera rig v1 wiring: button 1 is in parallel with BOOT; button 2 and the external
+// LED are on the rig's control deck. GPIO48 is the onboard WS2812 (unused); GPIO21 spare.
+#define LED_PIN 2        // onboard "IO2" LED; -1 to disable
+#define EXT_LED_PIN 1    // rig status LED via 330 ohm to GND; -1 to disable
+#define BUTTON_PIN 0     // BOOT / rig button 1: pause-resume, active low; -1 to disable
+#define BUTTON2_PIN 47   // rig button 2: photo now, active low; -1 to disable
 #define LED_ON HIGH
 
 #else

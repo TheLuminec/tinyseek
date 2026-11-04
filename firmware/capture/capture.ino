@@ -3,11 +3,13 @@
 //
 // Each boot starts a new folder /tinyseek/session_NNN/ on the card holding
 //   img_00001.jpg, img_00002.jpg, ...   one JPEG every CAPTURE_INTERVAL_MS
-//   captures.csv                         file, ms since boot, size, bytes
+//   captures.csv                         file, ms since boot, size, bytes, trigger
 //   session.txt                          the capture settings used
 //
-// BOOT button: pause / resume. LED: one short blink per photo, steady on while
-// paused, fast blinking forever on an error (no card, camera failure, card full).
+// Button 1 (BOOT): pause / resume the interval. Button 2: take a photo now, paused or
+// not, so pausing gives a manual-only mode. LEDs (onboard + rig): one short blink per
+// photo, steady on while paused, fast blinking forever on an error (no card, camera
+// failure, card full).
 // Settings and the serial log are documented in README.md next to this file.
 
 #define BOARD_FREENOVE_S3_CAM
@@ -44,8 +46,10 @@ static uint32_t imageCount = 0;
 static uint32_t lastCaptureMs = 0;
 static bool paused = false;
 
+// The onboard LED and the rig's external LED always show the same pattern.
 static void setLed(bool on) {
   if (LED_PIN >= 0) digitalWrite(LED_PIN, on ? LED_ON : !LED_ON);
+  if (EXT_LED_PIN >= 0) digitalWrite(EXT_LED_PIN, on ? LED_ON : !LED_ON);
 }
 
 // Unrecoverable: report on serial and blink fast until reset.
@@ -153,11 +157,11 @@ static void writeSessionInfo() {
   snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
   f = SD_MMC.open(path, FILE_WRITE);
   if (!f) fail("cannot write captures.csv");
-  f.println("file,ms_since_boot,width,height,bytes");
+  f.println("file,ms_since_boot,width,height,bytes,trigger");
   f.close();
 }
 
-static bool captureOne() {
+static bool captureOne(const char *trigger) {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("capture failed, retrying next interval");
@@ -175,8 +179,8 @@ static bool captureOne() {
     snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
     File log = SD_MMC.open(path, FILE_APPEND);
     if (log) {
-      log.printf("%s,%lu,%u,%u,%u\n", name, (unsigned long)millis(), (unsigned)fb->width,
-                 (unsigned)fb->height, (unsigned)fb->len);
+      log.printf("%s,%lu,%u,%u,%u,%s\n", name, (unsigned long)millis(), (unsigned)fb->width,
+                 (unsigned)fb->height, (unsigned)fb->len, trigger);
       log.close();
     }
     imageCount++;
@@ -190,26 +194,35 @@ static bool captureOne() {
   return ok;
 }
 
-static void pollButton() {
-  if (BUTTON_PIN < 0) return;
-  static bool wasDown = false;
-  bool down = digitalRead(BUTTON_PIN) == LOW;
+// True once per press of an active-low button (debounced).
+static bool pressed(int pin, bool &wasDown) {
+  if (pin < 0) return false;
+  bool down = digitalRead(pin) == LOW;
+  bool edge = false;
   if (down && !wasDown) {
     delay(30);  // debounce
-    if (digitalRead(BUTTON_PIN) == LOW) {
-      paused = !paused;
-      setLed(paused);
-      Serial.println(paused ? "paused" : "resumed");
-    }
+    edge = digitalRead(pin) == LOW;
   }
   wasDown = down;
+  return edge;
+}
+
+// Takes one photo with the LED blink, then restores the paused indicator.
+static void shoot(const char *trigger) {
+  if (SD_MMC.totalBytes() - SD_MMC.usedBytes() < MIN_FREE_BYTES) fail("SD card full");
+  setLed(true);
+  captureOne(trigger);
+  if (paused) delay(150);  // make the blink visible against the steady paused light
+  setLed(paused);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   if (LED_PIN >= 0) pinMode(LED_PIN, OUTPUT);
+  if (EXT_LED_PIN >= 0) pinMode(EXT_LED_PIN, OUTPUT);
   if (BUTTON_PIN >= 0) pinMode(BUTTON_PIN, INPUT_PULLUP);
+  if (BUTTON2_PIN >= 0) pinMode(BUTTON2_PIN, INPUT_PULLUP);
   setLed(false);
 
   if (!psramFound()) fail("no PSRAM: enable OPI PSRAM in the board settings");
@@ -225,23 +238,27 @@ void setup() {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
   }
-  Serial.printf("capturing to %s every %lu ms; BOOT button pauses\n", sessionDir,
+  Serial.printf("capturing to %s every %lu ms; button 1 pauses, button 2 shoots\n", sessionDir,
                 (unsigned long)CAPTURE_INTERVAL_MS);
   lastCaptureMs = millis() - CAPTURE_INTERVAL_MS;  // first photo right away
 }
 
 void loop() {
-  pollButton();
-  if (paused || millis() - lastCaptureMs < CAPTURE_INTERVAL_MS) {
+  static bool pauseWasDown = false, shootWasDown = false;
+  if (pressed(BUTTON_PIN, pauseWasDown)) {
+    paused = !paused;
+    setLed(paused);
+    Serial.println(paused ? "paused" : "resumed");
+  }
+  if (pressed(BUTTON2_PIN, shootWasDown)) {
+    shoot("button");
+  } else if (!paused && millis() - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
+    lastCaptureMs = millis();
+    shoot("interval");
+  } else {
     delay(10);
     return;
   }
-  lastCaptureMs = millis();
-
-  if (SD_MMC.totalBytes() - SD_MMC.usedBytes() < MIN_FREE_BYTES) fail("SD card full");
-  setLed(true);
-  captureOne();
-  setLed(false);
 
   if (MAX_IMAGES && imageCount >= MAX_IMAGES) {
     Serial.printf("done: %lu images in %s\n", (unsigned long)imageCount, sessionDir);

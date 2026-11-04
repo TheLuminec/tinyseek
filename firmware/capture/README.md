@@ -9,16 +9,18 @@ On every boot the sketch starts a new folder on the card and saves one JPEG ever
 
 ```
 /tinyseek/session_001/img_00001.jpg ...
-/tinyseek/session_001/captures.csv     file, ms since boot, width, height, bytes
+/tinyseek/session_001/captures.csv     file, ms since boot, width, height, bytes, trigger
 /tinyseek/session_001/session.txt      sensor id and the capture settings
 ```
 
-| Control | Behavior |
-| --- | --- |
-| BOOT button | pause / resume |
-| LED: short blink | one photo saved |
-| LED: steady on | paused |
-| LED: fast blinking | error; the reason is printed on serial (115200 baud) |
+| Control (camera rig v1) | GPIO | Behavior |
+| --- | --- | --- |
+| Button 1 (in parallel with BOOT) | 0 | pause / resume the interval |
+| Button 2 | 47 | take a photo now, paused or not; pause first for manual-only shooting |
+| Status LEDs (onboard IO2 + rig LED) | 2, 1 | short blink: photo saved; steady: paused; fast blinking: error, reason on serial (115200 baud) |
+
+`trigger` in `captures.csv` is `interval` or `button`. Power the board through USB-C only
+(BreadVolt USB-A when standalone, the PC cable when flashing), never both at once.
 
 ## Settings
 
