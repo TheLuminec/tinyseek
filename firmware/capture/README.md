@@ -4,8 +4,10 @@ Collects real photos from the target camera (Freenove ESP32-S3 WROOM CAM, OV2640
 used to train the Stable Diffusion domain LoRA, so generated images take on this sensor's
 look, and, kept separate, as the on-device test set.
 
-On every boot the sketch starts a new folder on the card and saves one JPEG every
-`CAPTURE_INTERVAL_MS` (5 s by default):
+On every boot, and whenever button 1 is held for 3 s, the sketch starts a new folder on
+the card (one session per object or place: note what each session number holds). It saves
+one JPEG every `CAPTURE_INTERVAL_MS` (5 s by default); no interval photo is taken while
+button 1 is held, and the first one in a new session comes one interval later.
 
 ```
 /tinyseek/session_001/img_00001.jpg ...
@@ -15,7 +17,7 @@ On every boot the sketch starts a new folder on the card and saves one JPEG ever
 
 | Control (camera rig v1) | GPIO | Behavior |
 | --- | --- | --- |
-| Button 1 (in parallel with BOOT) | 0 | pause / resume the interval |
+| Button 1 (in parallel with BOOT) | 0 | tap: pause / resume the interval (on release); hold 3 s: start a new session folder, confirmed by three quick blinks |
 | Button 2 | 47 | take a photo now, paused or not; pause first for manual-only shooting |
 | Status LEDs (onboard IO2 + rig LED) | 2, 1 | short blink: photo saved; steady: paused; fast blinking: error, reason on serial (115200 baud) |
 

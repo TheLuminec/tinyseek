@@ -1,12 +1,14 @@
 // Interval photo capture to microSD, for building the ESP32-camera image set
 // (domain LoRA training and the on-device test set).
 //
-// Each boot starts a new folder /tinyseek/session_NNN/ on the card holding
+// Each boot, and each 3 s hold of button 1, starts a new folder /tinyseek/session_NNN/
+// on the card holding
 //   img_00001.jpg, img_00002.jpg, ...   one JPEG every CAPTURE_INTERVAL_MS
 //   captures.csv                         file, ms since boot, size, bytes, trigger
 //   session.txt                          the capture settings used
 //
-// Button 1 (BOOT): pause / resume the interval. Button 2: take a photo now, paused or
+// Button 1 (BOOT): tap to pause / resume the interval, hold 3 s for a new session
+// (three quick blinks confirm). Button 2: take a photo now, paused or
 // not, so pausing gives a manual-only mode. LEDs (onboard + rig): one short blink per
 // photo, steady on while paused, fast blinking forever on an error (no card, camera
 // failure, card full).
@@ -24,7 +26,8 @@ static const uint32_t CAPTURE_INTERVAL_MS = 5000;     // time between photos
 static const framesize_t FRAME_SIZE = FRAMESIZE_SVGA; // 800x600; UXGA = 1600x1200 max
 static const int JPEG_QUALITY = 10;                   // 0-63, lower = better quality
 static const uint32_t WARMUP_MS = 4000;               // frames dropped while AEC/AWB settle
-static const uint32_t MAX_IMAGES = 0;                 // stop after this many; 0 = no limit
+static const uint32_t MAX_IMAGES = 0;                 // per session; 0 = no limit
+static const uint32_t NEW_SESSION_HOLD_MS = 3000;     // hold button 1 this long: new session
 static const bool VFLIP = true;                       // check the first photo and
 static const bool HMIRROR = false;                    // flip these if it is upside down
 
@@ -45,6 +48,7 @@ static char sessionDir[40];
 static uint32_t imageCount = 0;
 static uint32_t lastCaptureMs = 0;
 static bool paused = false;
+static bool button1Down = false;  // interval shots wait while button 1 is held
 
 // The onboard LED and the rig's external LED always show the same pattern.
 static void setLed(bool on) {
@@ -152,6 +156,7 @@ static void writeSessionInfo() {
   f.printf("gainceiling=%dx\n", 2 << (int)GAIN_CEILING);
   f.printf("ae_level=%d\naec_dsp=%d\nwb_mode=%d\n", AE_LEVEL, AEC_DSP, WB_MODE);
   f.printf("awb=1\nawb_gain=1\nbpc=1\nwpc=1\nlenc=1\nraw_gma=1\n");
+  f.printf("started_ms_since_boot=%lu\n", (unsigned long)millis());
   f.close();
 
   snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
@@ -159,6 +164,15 @@ static void writeSessionInfo() {
   if (!f) fail("cannot write captures.csv");
   f.println("file,ms_since_boot,width,height,bytes,trigger");
   f.close();
+}
+
+// Opens the next session folder; photo numbering restarts at img_00001.
+static void startSession() {
+  snprintf(sessionDir, sizeof(sessionDir), "%s/session_%03d", ROOT_DIR, nextSessionNumber());
+  if (!SD_MMC.mkdir(sessionDir)) fail("cannot create session folder");
+  writeSessionInfo();
+  imageCount = 0;
+  Serial.printf("session %s\n", sessionDir);
 }
 
 static bool captureOne(const char *trigger) {
@@ -207,6 +221,42 @@ static bool pressed(int pin, bool &wasDown) {
   return edge;
 }
 
+// Button 1: a short press (released before NEW_SESSION_HOLD_MS) toggles pause; holding it
+// that long starts a new session folder, confirmed by three quick blinks. Both edges are
+// debounced, and pause toggles on release so a long hold never pauses by accident.
+static void handleButton1() {
+  if (BUTTON_PIN < 0) return;
+  bool &down = button1Down;
+  static bool held = false;
+  static uint32_t changedAt = 0;
+  if (millis() - changedAt < 50) return;  // debounce
+  bool now = digitalRead(BUTTON_PIN) == LOW;
+  if (now && !down) {
+    down = true;
+    held = false;
+    changedAt = millis();
+  } else if (now && down && !held && millis() - changedAt >= NEW_SESSION_HOLD_MS) {
+    held = true;
+    startSession();
+    for (int i = 0; i < 3; i++) {
+      setLed(true);
+      delay(120);
+      setLed(false);
+      delay(120);
+    }
+    setLed(paused);
+    lastCaptureMs = millis();  // first interval photo one interval later: time to aim
+  } else if (!now && down) {
+    down = false;
+    changedAt = millis();
+    if (!held) {
+      paused = !paused;
+      setLed(paused);
+      Serial.println(paused ? "paused" : "resumed");
+    }
+  }
+}
+
 // Takes one photo with the LED blink, then restores the paused indicator.
 static void shoot(const char *trigger) {
   if (SD_MMC.totalBytes() - SD_MMC.usedBytes() < MIN_FREE_BYTES) fail("SD card full");
@@ -229,30 +279,24 @@ void setup() {
   if (!initSdCard()) fail("no SD card (FAT32, inserted before power-on?)");
   if (!initCamera()) fail("camera init failed (ribbon cable seated?)");
 
-  snprintf(sessionDir, sizeof(sessionDir), "%s/session_%03d", ROOT_DIR, nextSessionNumber());
-  if (!SD_MMC.mkdir(sessionDir)) fail("cannot create session folder");
-  writeSessionInfo();
+  startSession();
 
   // Keep frames flowing so auto exposure and white balance converge before the first photo.
   for (uint32_t start = millis(); millis() - start < WARMUP_MS;) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
   }
-  Serial.printf("capturing to %s every %lu ms; button 1 pauses, button 2 shoots\n", sessionDir,
-                (unsigned long)CAPTURE_INTERVAL_MS);
+  Serial.printf("capturing every %lu ms; button 1: tap pauses, hold 3 s = new session; "
+                "button 2 shoots\n", (unsigned long)CAPTURE_INTERVAL_MS);
   lastCaptureMs = millis() - CAPTURE_INTERVAL_MS;  // first photo right away
 }
 
 void loop() {
-  static bool pauseWasDown = false, shootWasDown = false;
-  if (pressed(BUTTON_PIN, pauseWasDown)) {
-    paused = !paused;
-    setLed(paused);
-    Serial.println(paused ? "paused" : "resumed");
-  }
+  static bool shootWasDown = false;
+  handleButton1();
   if (pressed(BUTTON2_PIN, shootWasDown)) {
     shoot("button");
-  } else if (!paused && millis() - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
+  } else if (!paused && !button1Down && millis() - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
     lastCaptureMs = millis();
     shoot("interval");
   } else {
