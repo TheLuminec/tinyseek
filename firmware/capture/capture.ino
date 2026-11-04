@@ -3,11 +3,13 @@
 //
 // Each boot starts a new folder /tinyseek/session_NNN/ on the card holding
 //   img_00001.jpg, img_00002.jpg, ...   one JPEG every CAPTURE_INTERVAL_MS
-//   captures.csv                         file, ms since boot, size, bytes
+//   captures.csv                         file, ms since boot, size, bytes, trigger
 //   session.txt                          the capture settings used
 //
-// BOOT button: pause / resume. LED: one short blink per photo, steady on while
-// paused, fast blinking forever on an error (no card, camera failure, card full).
+// Button 1 (BOOT): pause / resume the interval. Button 2: take a photo now, paused or
+// not, so pausing gives a manual-only mode. LEDs (onboard + rig): one short blink per
+// photo, steady on while paused, fast blinking forever on an error (no card, camera
+// failure, card full).
 // Settings and the serial log are documented in README.md next to this file.
 
 #define BOARD_FREENOVE_S3_CAM
@@ -21,10 +23,20 @@
 static const uint32_t CAPTURE_INTERVAL_MS = 5000;     // time between photos
 static const framesize_t FRAME_SIZE = FRAMESIZE_SVGA; // 800x600; UXGA = 1600x1200 max
 static const int JPEG_QUALITY = 10;                   // 0-63, lower = better quality
-static const int WARMUP_FRAMES = 10;                  // dropped while exposure settles
+static const uint32_t WARMUP_MS = 4000;               // frames dropped while AEC/AWB settle
 static const uint32_t MAX_IMAGES = 0;                 // stop after this many; 0 = no limit
 static const bool VFLIP = true;                       // check the first photo and
 static const bool HMIRROR = false;                    // flip these if it is upside down
+
+// ---- Sensor tuning (OV2640) --------------------------------------------------
+// The library's defaults (2x gain ceiling, no DSP exposure) leave indoor shots dark,
+// and the auto white balance drifts green when the image is that underexposed.
+// The detector firmware must use these same values so training and deployment
+// images match; every value is written to session.txt.
+static const gainceiling_t GAIN_CEILING = GAINCEILING_16X;  // 2X..128X; higher = brighter, noisier
+static const int AE_LEVEL = 1;                              // exposure bias, -2..2
+static const bool AEC_DSP = true;                           // "aec2": DSP exposure, better in low light
+static const int WB_MODE = 0;  // 0 auto, 1 sunny, 2 cloudy, 3 office, 4 home (fixed presets)
 static const uint64_t MIN_FREE_BYTES = 4ULL * 1024 * 1024;
 static const char *ROOT_DIR = "/tinyseek";
 // -----------------------------------------------------------------------------
@@ -34,8 +46,10 @@ static uint32_t imageCount = 0;
 static uint32_t lastCaptureMs = 0;
 static bool paused = false;
 
+// The onboard LED and the rig's external LED always show the same pattern.
 static void setLed(bool on) {
   if (LED_PIN >= 0) digitalWrite(LED_PIN, on ? LED_ON : !LED_ON);
+  if (EXT_LED_PIN >= 0) digitalWrite(EXT_LED_PIN, on ? LED_ON : !LED_ON);
 }
 
 // Unrecoverable: report on serial and blink fast until reset.
@@ -85,6 +99,18 @@ static bool initCamera() {
   sensor_t *s = esp_camera_sensor_get();
   s->set_vflip(s, VFLIP);
   s->set_hmirror(s, HMIRROR);
+  s->set_whitebal(s, 1);
+  s->set_awb_gain(s, 1);
+  s->set_wb_mode(s, WB_MODE);
+  s->set_exposure_ctrl(s, 1);
+  s->set_aec2(s, AEC_DSP);
+  s->set_ae_level(s, AE_LEVEL);
+  s->set_gain_ctrl(s, 1);
+  s->set_gainceiling(s, GAIN_CEILING);
+  s->set_bpc(s, 1);   // black-pixel correction
+  s->set_wpc(s, 1);   // white-pixel correction
+  s->set_lenc(s, 1);  // lens shading correction
+  s->set_raw_gma(s, 1);
   return true;
 }
 
@@ -121,18 +147,21 @@ static void writeSessionInfo() {
   f.printf("frame_size=%d\n", (int)FRAME_SIZE);
   f.printf("jpeg_quality=%d\n", JPEG_QUALITY);
   f.printf("interval_ms=%lu\n", (unsigned long)CAPTURE_INTERVAL_MS);
-  f.printf("warmup_frames=%d\n", WARMUP_FRAMES);
+  f.printf("warmup_ms=%lu\n", (unsigned long)WARMUP_MS);
   f.printf("vflip=%d\nhmirror=%d\n", VFLIP, HMIRROR);
+  f.printf("gainceiling=%dx\n", 2 << (int)GAIN_CEILING);
+  f.printf("ae_level=%d\naec_dsp=%d\nwb_mode=%d\n", AE_LEVEL, AEC_DSP, WB_MODE);
+  f.printf("awb=1\nawb_gain=1\nbpc=1\nwpc=1\nlenc=1\nraw_gma=1\n");
   f.close();
 
   snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
   f = SD_MMC.open(path, FILE_WRITE);
   if (!f) fail("cannot write captures.csv");
-  f.println("file,ms_since_boot,width,height,bytes");
+  f.println("file,ms_since_boot,width,height,bytes,trigger");
   f.close();
 }
 
-static bool captureOne() {
+static bool captureOne(const char *trigger) {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("capture failed, retrying next interval");
@@ -150,8 +179,8 @@ static bool captureOne() {
     snprintf(path, sizeof(path), "%s/captures.csv", sessionDir);
     File log = SD_MMC.open(path, FILE_APPEND);
     if (log) {
-      log.printf("%s,%lu,%u,%u,%u\n", name, (unsigned long)millis(), (unsigned)fb->width, (unsigned)fb->height,
-                 (unsigned)fb->len);
+      log.printf("%s,%lu,%u,%u,%u,%s\n", name, (unsigned long)millis(), (unsigned)fb->width,
+                 (unsigned)fb->height, (unsigned)fb->len, trigger);
       log.close();
     }
     imageCount++;
@@ -165,26 +194,35 @@ static bool captureOne() {
   return ok;
 }
 
-static void pollButton() {
-  if (BUTTON_PIN < 0) return;
-  static bool wasDown = false;
-  bool down = digitalRead(BUTTON_PIN) == LOW;
+// True once per press of an active-low button (debounced).
+static bool pressed(int pin, bool &wasDown) {
+  if (pin < 0) return false;
+  bool down = digitalRead(pin) == LOW;
+  bool edge = false;
   if (down && !wasDown) {
     delay(30);  // debounce
-    if (digitalRead(BUTTON_PIN) == LOW) {
-      paused = !paused;
-      setLed(paused);
-      Serial.println(paused ? "paused" : "resumed");
-    }
+    edge = digitalRead(pin) == LOW;
   }
   wasDown = down;
+  return edge;
+}
+
+// Takes one photo with the LED blink, then restores the paused indicator.
+static void shoot(const char *trigger) {
+  if (SD_MMC.totalBytes() - SD_MMC.usedBytes() < MIN_FREE_BYTES) fail("SD card full");
+  setLed(true);
+  captureOne(trigger);
+  if (paused) delay(150);  // make the blink visible against the steady paused light
+  setLed(paused);
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   if (LED_PIN >= 0) pinMode(LED_PIN, OUTPUT);
+  if (EXT_LED_PIN >= 0) pinMode(EXT_LED_PIN, OUTPUT);
   if (BUTTON_PIN >= 0) pinMode(BUTTON_PIN, INPUT_PULLUP);
+  if (BUTTON2_PIN >= 0) pinMode(BUTTON2_PIN, INPUT_PULLUP);
   setLed(false);
 
   if (!psramFound()) fail("no PSRAM: enable OPI PSRAM in the board settings");
@@ -195,28 +233,32 @@ void setup() {
   if (!SD_MMC.mkdir(sessionDir)) fail("cannot create session folder");
   writeSessionInfo();
 
-  for (int i = 0; i < WARMUP_FRAMES; i++) {
+  // Keep frames flowing so auto exposure and white balance converge before the first photo.
+  for (uint32_t start = millis(); millis() - start < WARMUP_MS;) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
-    delay(100);
   }
-  Serial.printf("capturing to %s every %lu ms; BOOT button pauses\n", sessionDir,
+  Serial.printf("capturing to %s every %lu ms; button 1 pauses, button 2 shoots\n", sessionDir,
                 (unsigned long)CAPTURE_INTERVAL_MS);
   lastCaptureMs = millis() - CAPTURE_INTERVAL_MS;  // first photo right away
 }
 
 void loop() {
-  pollButton();
-  if (paused || millis() - lastCaptureMs < CAPTURE_INTERVAL_MS) {
+  static bool pauseWasDown = false, shootWasDown = false;
+  if (pressed(BUTTON_PIN, pauseWasDown)) {
+    paused = !paused;
+    setLed(paused);
+    Serial.println(paused ? "paused" : "resumed");
+  }
+  if (pressed(BUTTON2_PIN, shootWasDown)) {
+    shoot("button");
+  } else if (!paused && millis() - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
+    lastCaptureMs = millis();
+    shoot("interval");
+  } else {
     delay(10);
     return;
   }
-  lastCaptureMs = millis();
-
-  if (SD_MMC.totalBytes() - SD_MMC.usedBytes() < MIN_FREE_BYTES) fail("SD card full");
-  setLed(true);
-  captureOne();
-  setLed(false);
 
   if (MAX_IMAGES && imageCount >= MAX_IMAGES) {
     Serial.printf("done: %lu images in %s\n", (unsigned long)imageCount, sessionDir);
