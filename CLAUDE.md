@@ -85,6 +85,7 @@ Anything that runs longer than about a minute (dataset downloads, SD generation,
 - Student: CenterNet-style box detector, MobileNetV2-0.5 backbone (narrowest timm width with pretrained weights), single stride-8 head, 128x128 input. Chosen over FOMO so standard mAP@0.5 applies.
 - Runtime: ESP-DL (export via esp-ppq, target esp32s3). Any layer that breaks ESP-DL's power-of-two exponent rule is moved to int16 automatically by the exporter.
 - Board: Freenove ESP32-S3 (N16R8, OV2640) planned; keep firmware board-configurable.
+- Camera lens: 160-degree wide-angle (fisheye-type) OV2640 module on a 75 mm flex, per the user's purchase listing. Objects look small and barrel-distorted, so a 128 px input loses detail fast; consider a center crop of a higher-resolution frame and distortion augmentation for synthetic images. Camera rig: tilt at most 30 degrees down for training photos, or the rig's tray edge enters the frame.
 - Generation runs in fp32 with LCM-LoRA (few steps) because Pascal GPUs have no fast fp16.
 - The reported model is the final-epoch checkpoint; COCO val2017 is the test set and is never used to select checkpoints.
 
