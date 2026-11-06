@@ -11,6 +11,7 @@ base_model: stable-diffusion-v1-5/stable-diffusion-v1-5
 lcm_lora: latent-consistency/lcm-lora-sdv1-5
 domain_lora: null                 # path to the ESP32-camera-style LoRA once trained
 domain_lora_scale: 0.8
+domain_trigger: esp32cam photo    # caption prefix the domain LoRA was trained with
 
 num_images: 2000
 resolution: 512

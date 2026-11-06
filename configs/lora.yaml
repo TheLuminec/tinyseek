@@ -1,0 +1,22 @@
+# Domain LoRA: teaches SD 1.5 the ESP32 camera's look (tinyseek.generate.train_lora).
+# Output: runs/lora/<name>/checkpoint-<step>/pytorch_lora_weights.safetensors + final/
+seed: 0
+name: esp32cam_v1
+base_model: stable-diffusion-v1-5/stable-diffusion-v1-5
+captions: data/esp32cam/captions.jsonl    # from tinyseek.generate.caption
+images: data/esp32cam/raw
+run_root: runs
+
+resolution: 512
+crops_per_image: 4          # random square crops cached per photo (plus horizontal flips at train time)
+crop_scale: [0.75, 1.0]     # crop side as a fraction of the photo's short side
+
+rank: 16
+alpha: 16
+target_modules: [to_q, to_k, to_v, to_out.0]
+lr: 1.0e-4
+warmup_steps: 50
+steps: 1500
+batch_size: 2
+caption_dropout: 0.05       # sometimes train on the empty prompt, as SD was
+checkpoint_every: 500

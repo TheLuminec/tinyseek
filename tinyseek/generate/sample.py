@@ -31,6 +31,12 @@ def text_prompt(spec: dict, scenes: list[str], seed: int, index: int) -> str:
     return template.format(scene=scenes[rng.integers(len(scenes))])
 
 
+def with_trigger(text: str, cfg: dict) -> str:
+    """Prefix the domain LoRA's trigger phrase, which carries the camera's look."""
+    trigger = cfg.get("domain_trigger") if cfg.get("domain_lora") else None
+    return f"{trigger}, {text}" if trigger else text
+
+
 def load_pipeline(cfg: dict, device: torch.device):
     from diffusers import DiffusionPipeline, LCMScheduler
 
@@ -72,7 +78,7 @@ def generate(cfg: dict) -> Path:
         bs = cfg["batch_size"]
         for start in tqdm(range(0, len(todo), bs), desc=f"SD {cfg['prompt']}", mininterval=30):
             idx = todo[start : start + bs]
-            texts = [text_prompt(spec, prompts["scenes"], cfg["seed"], i) for i in idx]
+            texts = [with_trigger(text_prompt(spec, prompts["scenes"], cfg["seed"], i), cfg) for i in idx]
             gens = [torch.Generator(device).manual_seed(image_seed(cfg["seed"], i)) for i in idx]
             images = pipe(
                 prompt=texts,
