@@ -20,7 +20,7 @@ student can be scored with standard COCO mAP@0.5).
 | ESP32-S3 budget check | `tinyseek.train.budget` | working |
 | int8 ESP-DL export + int8 accuracy check | `tinyseek.train.export` | working |
 | ESP32 photo collection (interval capture to SD) | `firmware/capture` | written; not yet flashed |
-| ESP32-camera domain LoRA | — | needs ~200-300 photos from the board |
+| ESP32-camera domain LoRA | `tinyseek.generate.train_lora` | v1 trained on 130 photos (one apartment) |
 | On-device detection firmware | `firmware/` | not started |
 
 ## Setup
@@ -43,7 +43,22 @@ All paths below are relative to the repo root; `data/` and `runs/` are gitignore
 # 1. Real data: COCO annotations, per-prompt subsets, and only the images they use (~4 GB)
 python -m tinyseek.data.coco --prompts person cup backpack
 
-# 2. Synthetic images (resumable; ~2.4 s/image on a 1080 Ti in fp32)
+# 1b. Camera domain LoRA from ESP32 photos (firmware/capture), copied to data/esp32cam/raw/session_*
+python -m tinyseek.data.esp32_prep data/esp32cam/raw --out data/esp32cam/manifest.json \
+    --exclude data/esp32cam/exclude.txt --coco data/esp32cam/kept_coco.json     # cull blur/duplicates
+python -m tinyseek.generate.caption --coco data/esp32cam/kept_coco.json \
+    --images data/esp32cam/raw --out data/esp32cam/captions.jsonl                 # BLIP + trigger
+python -m tinyseek.generate.train_lora --config configs/lora.yaml                 # ~50 min, 1080 Ti
+python -m tinyseek.generate.compare_lora --run runs/lora/esp32cam_v1 --teacher owlv2 \
+    --real data/esp32cam/kept_coco.json --real-images data/esp32cam/raw           # pick checkpoint/scale
+#    Draft box labels on the camera photos, to correct by hand into the test set:
+python -m tinyseek.label.teacher --teacher owlv2 --prompt cup --coco data/esp32cam/kept_coco.json \
+    --images data/esp32cam/raw --out data/labels/owlv2/esp32cam_cup_raw.json      # per prompt
+python -m tinyseek.label.merge --out data/esp32cam/draft_labels.json \
+    data/labels/owlv2/esp32cam_person_raw.json:0.15 data/labels/owlv2/esp32cam_cup_raw.json:0.2 \
+    data/labels/owlv2/esp32cam_backpack_raw.json:0.3
+
+# 2. Synthetic images (resumable; ~2.4 s/image on a 1080 Ti in fp32; uses the domain LoRA)
 python -m tinyseek.generate.sample prompt=cup num_images=2000 synth_set=sd15_lcm_v0
 
 # 3. Teacher labels: one raw pass, then filtered copies at several thresholds

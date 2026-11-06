@@ -3,14 +3,18 @@
 seed: 0
 prompt: cup
 data_root: data
-synth_set: sd15_lcm_v0            # bump the suffix whenever generation settings change
+synth_set: sd15_lcm_esp32v1        # bump the suffix whenever generation settings change
 
 base_model: stable-diffusion-v1-5/stable-diffusion-v1-5
 # Few-step sampling: Pascal GPUs have no fast fp16, so generation runs in fp32 and
 # LCM-LoRA (4-8 steps) is what makes thousands of images per prompt affordable.
 lcm_lora: latent-consistency/lcm-lora-sdv1-5
-domain_lora: null                 # path to the ESP32-camera-style LoRA once trained
-domain_lora_scale: 0.8
+# ESP32-camera LoRA (configs/lora.yaml). Picked with tinyseek.generate.compare_lora, 32 images
+# per object: step 500 at 0.6 moves CLIP similarity to real camera photos 0.614 -> 0.665 while
+# OWLv2 still finds the object in 64% of images (plain SD: 72%); stronger settings reach 0.73
+# similarity but drop to ~53%, losing people and backpacks. Set null for plain SD.
+domain_lora: runs/lora/esp32cam_v1/checkpoint-500
+domain_lora_scale: 0.6
 domain_trigger: esp32cam photo    # caption prefix the domain LoRA was trained with
 
 num_images: 2000
