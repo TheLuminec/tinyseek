@@ -28,17 +28,18 @@ static const int JPEG_QUALITY = 10;                   // 0-63, lower = better qu
 static const uint32_t WARMUP_MS = 4000;               // frames dropped while AEC/AWB settle
 static const uint32_t MAX_IMAGES = 0;                 // per session; 0 = no limit
 static const uint32_t NEW_SESSION_HOLD_MS = 3000;     // hold button 1 this long: new session
-static const bool VFLIP = true;                       // check the first photo and
-static const bool HMIRROR = false;                    // flip these if it is upside down
+static const bool VFLIP = false;                      // camera rig v1: module upright, flex
+static const bool HMIRROR = false;                    // at the bottom -> no flip needed
 
 // ---- Sensor tuning (OV2640) --------------------------------------------------
-// The library's defaults (2x gain ceiling, no DSP exposure) leave indoor shots dark,
-// and the auto white balance drifts green when the image is that underexposed.
-// The detector firmware must use these same values so training and deployment
-// images match; every value is written to session.txt.
-static const gainceiling_t GAIN_CEILING = GAINCEILING_16X;  // 2X..128X; higher = brighter, noisier
-static const int AE_LEVEL = 1;                              // exposure bias, -2..2
-static const bool AEC_DSP = true;                           // "aec2": DSP exposure, better in low light
+// Close to the library defaults: on a working module they expose well. (Raising the AE
+// bias, DSP exposure and a 16x gain ceiling only compensated for a faulty module; on a
+// good one they washed images out and amplified purple chroma noise.) 4x gain leaves
+// some headroom for dim rooms. The detector firmware must use these same values so
+// training and deployment images match; every value is written to session.txt.
+static const gainceiling_t GAIN_CEILING = GAINCEILING_4X;   // 2X..128X; higher = brighter, noisier
+static const int AE_LEVEL = 0;                              // exposure bias, -2..2
+static const bool AEC_DSP = false;                          // "aec2": DSP exposure, brighter, hazier
 static const int WB_MODE = 0;  // 0 auto, 1 sunny, 2 cloudy, 3 office, 4 home (fixed presets)
 static const uint64_t MIN_FREE_BYTES = 4ULL * 1024 * 1024;
 static const char *ROOT_DIR = "/tinyseek";

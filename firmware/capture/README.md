@@ -34,11 +34,11 @@ At the top of `capture.ino`:
 | `FRAME_SIZE` | `FRAMESIZE_SVGA` (800x600) | Enough for 512 px LoRA crops while keeping the sensor's character |
 | `JPEG_QUALITY` | 10 | 0-63, lower is better; 10-12 is the usual range for the OV2640 |
 | `MAX_IMAGES` | 0 (no limit) | Stop after N photos |
-| `VFLIP` / `HMIRROR` | true / false | Check the first photo; flip if it is upside down |
+| `VFLIP` / `HMIRROR` | false / false | Upright in camera rig v1 (flex leaving the module's bottom edge) |
 | `WARMUP_MS` | 4000 | Frames are dropped this long so exposure and white balance settle |
-| `GAIN_CEILING` | `GAINCEILING_16X` | The library default (2x) leaves indoor shots dark and green |
-| `AE_LEVEL` | 1 | Exposure bias, -2 to 2 |
-| `AEC_DSP` | true | The sensor's DSP exposure mode (`aec2`); better in low light |
+| `GAIN_CEILING` | `GAINCEILING_4X` | A little above the library's 2x for dim rooms; 16x amplified chroma noise |
+| `AE_LEVEL` | 0 | Exposure bias, -2 to 2; +1 washed out well-lit rooms |
+| `AEC_DSP` | false | The sensor's DSP exposure mode (`aec2`); brighter but hazier |
 | `WB_MODE` | 0 (auto) | 1-4 lock a preset (sunny, cloudy, office, home) |
 
 The sensor settings are part of the camera's "look": the detector firmware must use the
