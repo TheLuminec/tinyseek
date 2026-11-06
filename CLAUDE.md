@@ -86,6 +86,7 @@ Anything that runs longer than about a minute (dataset downloads, SD generation,
 - Runtime: ESP-DL (export via esp-ppq, target esp32s3). Any layer that breaks ESP-DL's power-of-two exponent rule is moved to int16 automatically by the exporter.
 - Board: Freenove ESP32-S3 (N16R8, OV2640) planned; keep firmware board-configurable.
 - Camera lens: 160-degree wide-angle (fisheye-type) OV2640 module on a 75 mm flex, per the user's purchase listing. Objects look small and barrel-distorted, so a 128 px input loses detail fast; consider a center crop of a higher-resolution frame and distortion augmentation for synthetic images. Camera rig: tilt at most 30 degrees down for training photos, or the rig's tray edge enters the frame.
+- Camera capture settings are frozen for data collection as of 2026-11-06 (`firmware/capture`, logged in each `session.txt`): SVGA JPEG q10, VFLIP/HMIRROR off (rig v1), AWB auto, AE level 0, aec2 off, 4x gain ceiling, 4 s warmup. The detector firmware must use the same sensor settings. Photos from the first (faulty, green) OV2640 module or from the washed-out 16x/AE+1 settings are not usable.
 - Generation runs in fp32 with LCM-LoRA (few steps) because Pascal GPUs have no fast fp16.
 - The reported model is the final-epoch checkpoint; COCO val2017 is the test set and is never used to select checkpoints.
 
