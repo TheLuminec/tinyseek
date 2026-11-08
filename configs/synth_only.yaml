@@ -3,7 +3,7 @@ base: base.yaml
 condition: synth_only
 teacher: owlv2
 teacher_threshold: 0.3
-synth_set: sd15_lcm_esp32v1        # directory under data/synthetic/<prompt>/
+synth_set: sd15_lcm_esp32v2        # directory under data/synthetic/<prompt>/
 train:
   sources:
     - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}.json", images: "synthetic/{prompt}/{synth_set}"}

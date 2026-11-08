@@ -76,6 +76,8 @@ def main() -> None:
     parser.add_argument("--scale", type=float, help="domain LoRA scale (default: the generate config's)")
     parser.add_argument("--scales", type=float, nargs="+", help="several LoRA scales, one column each")
     parser.add_argument("--checkpoints", type=int, nargs="+", help="only these checkpoint steps")
+    parser.add_argument("--extra", nargs="+",
+                        help="checkpoints from other runs as <checkpoint dir>:<scale>, e.g. a previous version")
     parser.add_argument("--teacher", choices=["owlv2", "grounding_dino"],
                         help="also report how often the teacher finds the prompted object")
     parser.add_argument("--teacher-threshold", type=float, default=0.3)
@@ -89,7 +91,12 @@ def main() -> None:
     if args.checkpoints:
         checkpoints = [p for p in checkpoints if int(p.name.split("-")[1]) in args.checkpoints]
     scales = args.scales or [scale]
-    columns = [("base", None, 0.0)] + [
+    extra = []
+    for item in args.extra or []:
+        path, _, sc = item.rpartition(":")
+        ckpt = Path(path)
+        extra.append((f"{ckpt.parent.name} {ckpt.name.replace('checkpoint-', 'step ')} x{sc}", ckpt, float(sc)))
+    columns = [("base", None, 0.0)] + extra + [
         (f"{p.name.replace('checkpoint-', 'step ')}" + (f" x{sc}" if len(scales) > 1 else ""), p, sc)
         for p in checkpoints for sc in scales
     ]

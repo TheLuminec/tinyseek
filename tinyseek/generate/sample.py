@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from tinyseek.config import load_config, load_prompts, save_run_config
+from tinyseek.config import deep_merge, load_config, load_prompts, save_run_config
 
 
 def image_seed(seed: int, index: int) -> int:
@@ -60,7 +60,13 @@ def load_pipeline(cfg: dict, device: torch.device):
     return pipe.to(device)
 
 
+def resolve_prompt_overrides(cfg: dict) -> dict:
+    """Apply ``prompt_overrides[<prompt>]`` (e.g. a different domain LoRA for one object)."""
+    return deep_merge(cfg, cfg.get("prompt_overrides", {}).get(cfg["prompt"], {}))
+
+
 def generate(cfg: dict) -> Path:
+    cfg = resolve_prompt_overrides(cfg)
     prompts = load_prompts()
     spec = prompts["prompts"][cfg["prompt"]]
     out_dir = Path(cfg["data_root"]) / "synthetic" / cfg["prompt"] / cfg["synth_set"]

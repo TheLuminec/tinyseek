@@ -46,3 +46,12 @@ def test_default_student_fits_esp32s3():
     cfg = load_config("configs/base.yaml")
     budget = measure(build_model(dict(cfg["model"], pretrained=False)), cfg["model"]["input_size"])
     assert budget.fits, budget
+
+
+def test_generate_prompt_overrides():
+    from tinyseek.generate.sample import resolve_prompt_overrides
+
+    person = resolve_prompt_overrides(load_config("configs/generate.yaml", ["prompt=person"]))
+    cup = resolve_prompt_overrides(load_config("configs/generate.yaml", ["prompt=cup"]))
+    assert person["domain_lora"] != cup["domain_lora"]
+    assert person["synth_set"] == cup["synth_set"]  # one set name, per-prompt folders
