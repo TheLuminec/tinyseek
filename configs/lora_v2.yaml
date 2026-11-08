@@ -1,0 +1,7 @@
+# Domain LoRA v2: 508 camera photos (sessions 005-017: adds an outdoor deck, daylight scenes and
+# dedicated backpack/cup sessions), captions with session object hints. Same recipe as v1, run
+# longer for ~4x the photos.
+base: lora.yaml
+name: esp32cam_v2
+captions: data/esp32cam/captions_v2.jsonl
+steps: 2500

@@ -38,22 +38,44 @@ def caption_images(paths: list[Path], device: torch.device, batch_size: int = 8)
     return captions
 
 
+def load_hints(path: Path) -> dict[str, str]:
+    import csv
+
+    with path.open() as f:
+        return {row["session"]: row["hint"].strip() for row in csv.DictReader(f) if row.get("hint", "").strip()}
+
+
+def with_hint(description: str, hint: str) -> str:
+    """Append the session's object phrase unless the description already names the object."""
+    if not hint or hint.split()[-1].lower() in description.lower():
+        return description
+    return f"{description}, {hint}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--coco", type=Path, required=True, help="COCO image list of the photos to caption")
     parser.add_argument("--images", type=Path, required=True, help="image root the file names are relative to")
     parser.add_argument("--out", type=Path, required=True, help="JSONL: file, description, caption")
     parser.add_argument("--trigger", default=TRIGGER)
+    parser.add_argument("--hints", type=Path,
+                        help="CSV with columns session,hint: a phrase naming the session's object "
+                             "(e.g. 'a black backpack'), appended when the description omits it")
     args = parser.parse_args()
 
     files = [img["file_name"] for img in json.loads(args.coco.read_text())["images"]]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     descriptions = caption_images([args.images / f for f in files], device)
+    hints = load_hints(args.hints) if args.hints else {}
+    added = 0
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w") as f:
         for file, desc in zip(files, descriptions):
-            f.write(json.dumps({"file": file, "description": desc, "caption": f"{args.trigger}, {desc}"}) + "\n")
-    print(f"{len(files)} captions -> {args.out}")
+            caption = with_hint(desc, hints.get(file.split("/")[0], ""))
+            added += caption != desc
+            f.write(json.dumps({"file": file, "description": desc,
+                                "caption": f"{args.trigger}, {caption}"}) + "\n")
+    print(f"{len(files)} captions -> {args.out} ({added} with a session hint added)")
 
 
 if __name__ == "__main__":
