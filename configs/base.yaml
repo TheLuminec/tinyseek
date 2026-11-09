@@ -32,6 +32,9 @@ train:
 eval:
   sets:
     coco_val: {ann: "coco/subsets/val2017_{prompt}.json", images: coco/val2017}
+    # Real deployment domain: 590 ESP32 camera photos, every box confirmed or drawn by hand
+    # (tinyseek.label.curate over the gallery review). Same COCO category ids.
+    esp32_real: {ann: esp32cam/reviewed_labels.json, images: esp32cam/raw}
   score_threshold: 0.05
   max_detections: 20
   iou_threshold: 0.5
