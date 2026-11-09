@@ -9,10 +9,13 @@ Rules per teacher box:
   verdict "bad"   -> dropped whatever its score
   no verdict      -> kept only if score >= threshold, as with plain thresholding
                      (--unreviewed drop: never; for a set that was reviewed in full)
-Boxes are matched to verdicts by ``box_id``: a hash of the label and the box rounded to
+Boxes drawn by hand in the gallery (the export's "added" list) are added as verified
+positives when their label is this file's category and their image is in it.
+Teacher boxes are matched to verdicts by ``box_id``: a hash of the label and the box rounded to
 whole pixels, so the id survives re-exporting or re-pushing the same teacher labels.
 
-Verdicts file: {"verdicts": [{"file": ..., "box_id": ..., "verdict": "good" | "bad", ...}]}
+Verdicts file: {"verdicts": [{"file", "box_id", "verdict": "good" | "bad", ...}],
+                "added": [{"file", "box_id", "label", "bbox": [x, y, w, h], ...}]}
 """
 
 from __future__ import annotations
@@ -37,8 +40,17 @@ def load_verdicts(paths: list[Path]) -> dict[tuple[str, str], str]:
     return verdicts
 
 
+def load_added(paths: list[Path]) -> list[dict]:
+    """Boxes drawn by hand in the gallery (the export's "added" list)."""
+    added: list[dict] = []
+    for path in paths:
+        added += json.loads(path.read_text()).get("added", [])
+    return added
+
+
 def curate(
-    coco: dict, verdicts: dict[tuple[str, str], str], threshold: float, unreviewed: str = "threshold"
+    coco: dict, verdicts: dict[tuple[str, str], str], threshold: float, unreviewed: str = "threshold",
+    added: list[dict] | None = None,
 ) -> tuple[dict, dict[str, int]]:
     names = {img["id"]: img["file_name"] for img in coco["images"]}
     labels = {c["id"]: c["name"] for c in coco["categories"]}
@@ -56,6 +68,21 @@ def curate(
             kept.append(dict(a, id=len(kept) + 1, verified=False))
         else:
             counts["threshold_dropped"] += 1
+    # Hand-drawn boxes: owner-confirmed positives the teacher never produced.
+    ids = {f: i for i, f in names.items()}
+    cats = {name: cid for cid, name in labels.items()}
+    counts.update(hand_added=0, hand_other_label=0, hand_unknown_image=0)
+    for box in added or []:
+        if box["label"] not in cats:
+            counts["hand_other_label"] += 1
+        elif box["file"] not in ids:
+            counts["hand_unknown_image"] += 1
+        else:
+            x, y, w, h = box["bbox"]
+            counts["hand_added"] += 1
+            kept.append({"id": len(kept) + 1, "image_id": ids[box["file"]], "category_id": cats[box["label"]],
+                         "bbox": [x, y, w, h], "area": w * h, "iscrowd": 0, "score": 1.0,
+                         "verified": True, "source": "hand", "box_id": box["box_id"]})
     info = dict(coco.get("info", {}), curated={"threshold": threshold, "unreviewed": unreviewed, **counts})
     return dict(coco, info=info, annotations=kept), counts
 
@@ -71,7 +98,7 @@ def main() -> None:
     args = parser.parse_args()
 
     curated, counts = curate(json.loads(args.raw.read_text()), load_verdicts(args.verdicts), args.threshold,
-                              args.unreviewed)
+                              args.unreviewed, load_added(args.verdicts))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(curated))
     print(f"{args.out}: {len(curated['annotations'])} boxes  " + "  ".join(f"{k}={v}" for k, v in counts.items()))

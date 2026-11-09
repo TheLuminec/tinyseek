@@ -18,9 +18,18 @@ def test_curate_applies_verdicts():
                 ("a.jpg", box_id("cup", [50, 50, 20, 20])): "bad"}
     out, counts = curate(coco, verdicts, threshold=0.3)
     assert [a["bbox"][0] for a in out["annotations"]] == [10.2, 90]
-    assert counts == {"good": 1, "bad": 1, "threshold_kept": 1, "threshold_dropped": 1}
+    assert counts == {"good": 1, "bad": 1, "threshold_kept": 1, "threshold_dropped": 1,
+                      "hand_added": 0, "hand_other_label": 0, "hand_unknown_image": 0}
     assert out["annotations"][0]["verified"] is True
     assert out["annotations"][1]["verified"] is False
+
+    added = [{"file": "a.jpg", "box_id": "u1", "label": "cup", "bbox": [100, 5, 30, 30]},
+             {"file": "a.jpg", "box_id": "u2", "label": "person", "bbox": [0, 0, 50, 90]},   # other category
+             {"file": "zzz.jpg", "box_id": "u3", "label": "cup", "bbox": [0, 0, 10, 10]}]    # unknown image
+    with_hand, counts = curate(coco, verdicts, threshold=0.3, unreviewed="drop", added=added)
+    assert [a["bbox"][0] for a in with_hand["annotations"]] == [10.2, 100]
+    assert with_hand["annotations"][1]["source"] == "hand" and with_hand["annotations"][1]["verified"]
+    assert (counts["hand_added"], counts["hand_other_label"], counts["hand_unknown_image"]) == (1, 1, 1)
 
     only_good, counts = curate(coco, verdicts, threshold=0.3, unreviewed="drop")
     assert [a["bbox"][0] for a in only_good["annotations"]] == [10.2]
