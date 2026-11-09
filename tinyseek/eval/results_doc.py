@@ -84,6 +84,46 @@ def session_recall(labels_dir: Path, threshold: float) -> list[dict]:
     return rows
 
 
+def reviewed_teacher_stats(labels_dir: Path, verdicts_path: Path, thresholds: tuple[float, ...]) -> dict:
+    """Teacher precision/recall per object against the hand-reviewed real labels.
+
+    Ground truth = teacher boxes marked good + boxes drawn by hand. At threshold t a teacher
+    box counts if its score >= t; precision = good / counted, recall = good / ground truth.
+    Boxes without a verdict count as wrong, as the reviewer asked.
+    """
+    from tinyseek.label.curate import box_id
+
+    export = json.loads(verdicts_path.read_text())
+    verdicts = {(v["file"], v["box_id"]): v["verdict"] for v in export["verdicts"]}
+    stats = {}
+    for obj in OBJECTS:
+        coco = json.loads((labels_dir / f"esp32cam_{obj}_raw.json").read_text())
+        names = {img["id"]: img["file_name"] for img in coco["images"]}
+        boxes = [(a["score"], verdicts.get((names[a["image_id"]], box_id(obj, a["bbox"]))) == "good")
+                 for a in coco["annotations"]]
+        drawn = sum(a["label"] == obj for a in export.get("added", []))
+        truth = sum(good for _, good in boxes) + drawn
+        per_t = {}
+        for t in thresholds:
+            counted = [good for score, good in boxes if score >= t]
+            per_t[t] = {"tp": sum(counted), "counted": len(counted)}
+        stats[obj] = {"truth": truth, "drawn": drawn, "per_t": per_t}
+    return stats
+
+
+def synth_yield(labels_dir: Path, synth_set: str, objects: tuple[str, ...], threshold: float) -> dict:
+    """Share of generated images with at least one teacher box >= threshold, per object set."""
+    out = {}
+    for obj in objects:
+        path = labels_dir / f"synth_{synth_set}_{obj}_raw.json"
+        if not path.exists():
+            continue
+        coco = json.loads(path.read_text())
+        hit = {a["image_id"] for a in coco["annotations"] if a["score"] >= threshold}
+        out[obj] = {"k": len(hit), "n": len(coco["images"])}
+    return out
+
+
 def column_label(col: str) -> str:
     return {"base": "plain SD 1.5"}.get(col, col.replace("esp32cam_", "").replace("_", " "))
 
@@ -114,6 +154,14 @@ def build(args: argparse.Namespace) -> dict:
     k_ch, n_ch = found_total(chosen)
     rec_k = sum(round(r["value"] * r["n"]) for r in recall)
     rec_n = sum(r["n"] for r in recall)
+    thresholds = (0.1, 0.2, 0.3)
+    reviewed = reviewed_teacher_stats(Path(args.labels_dir), Path(args.verdicts), thresholds)
+    rt = args.review_threshold
+    rv_tp = sum(reviewed[o]["per_t"][rt]["tp"] for o in OBJECTS)
+    rv_counted = sum(reviewed[o]["per_t"][rt]["counted"] for o in OBJECTS)
+    rv_truth = sum(reviewed[o]["truth"] for o in OBJECTS)
+    yields = synth_yield(Path(args.labels_dir), args.synth_set, ("cup", "backpack"), teacher["threshold"])
+    y_k, y_n = sum(y["k"] for y in yields.values()), sum(y["n"] for y in yields.values())
 
     headline = [
         {"id": "lora_clip_sim_real", "group": "Domain LoRA (camera look)", "result": "CLIP similarity to real photos",
@@ -130,6 +178,20 @@ def build(args: argparse.Namespace) -> dict:
          "metric": f"object found at score >= {args.session_threshold} (one-object sessions)", "n": rec_n,
          "value": round(rec_k / rec_n, 4), "ci": wilson(rec_k, rec_n), "chance": None, "comparator": None,
          "compliance": "upper bound: assumes the object is in every session photo; box not hand-checked"},
+        {"id": "teacher_precision_real_reviewed", "group": "Teacher on real ESP32 photos",
+         "result": "teacher precision (hand-reviewed)",
+         "metric": f"good / all teacher boxes at score >= {rt}, person/cup/backpack pooled", "n": rv_counted,
+         "value": round(rv_tp / rv_counted, 4), "ci": wilson(rv_tp, rv_counted), "chance": None, "comparator": None,
+         "compliance": "every teacher box on 508 kept photos reviewed by the owner in the gallery"},
+        {"id": "teacher_recall_real_reviewed", "group": "Teacher on real ESP32 photos",
+         "result": "teacher recall (hand-reviewed)",
+         "metric": f"good teacher boxes at score >= {rt} / all true objects (incl. hand-drawn misses)",
+         "n": rv_truth, "value": round(rv_tp / rv_truth, 4), "ci": wilson(rv_tp, rv_truth), "chance": None,
+         "comparator": None, "compliance": "ground truth: owner-confirmed teacher boxes plus owner-drawn boxes, 590 photos"},
+        {"id": "synth_label_yield", "group": "Synthetic sets", "result": "images the teacher labels",
+         "metric": f"share of generated images with a box >= {teacher['threshold']}, cup and backpack pooled",
+         "n": y_n, "value": round(y_k / max(1, y_n), 4), "ci": wilson(y_k, y_n), "chance": None, "comparator": None,
+         "compliance": f"{args.synth_set}, 2,000 images per object"},
         {"id": "student_cup_real_only_ap50", "group": "Student detector", "result": "COCO mAP@0.5 (cup)",
          "metric": "AP@0.5, 5,000 COCO val2017 images", "n": student["num_images"], "value": round(student["ap50"], 4),
          "ci": None, "chance": None,
@@ -145,6 +207,24 @@ def build(args: argparse.Namespace) -> dict:
         {"id": "teacher_recall_sessions", "title": f"Teacher recall on real object sessions (score >= {args.session_threshold})",
          "unit": "rate", "domain": [0, 1], "better": "higher", "decimals": 2,
          "rows": [{"label": f"{r['label']} (n={r['n']})", "value": r["value"], "ci": r["ci"]} for r in recall]},
+    ]
+    bars += [
+        {"id": "teacher_precision_real_reviewed", "title": "Teacher precision on real ESP32 photos (hand-reviewed)",
+         "unit": "precision", "domain": [0, 1], "better": "higher", "decimals": 2,
+         "rows": [{"label": f"{o} · score >= {t}", "value": round(reviewed[o]["per_t"][t]["tp"]
+                                                                  / max(1, reviewed[o]["per_t"][t]["counted"]), 4),
+                   "ci": wilson(reviewed[o]["per_t"][t]["tp"], reviewed[o]["per_t"][t]["counted"])}
+                  for o in OBJECTS for t in thresholds]},
+        {"id": "teacher_recall_real_reviewed", "title": "Teacher recall on real ESP32 photos (hand-reviewed)",
+         "unit": "recall", "domain": [0, 1], "better": "higher", "decimals": 2,
+         "rows": [{"label": f"{o} · score >= {t}", "value": round(reviewed[o]["per_t"][t]["tp"]
+                                                                  / max(1, reviewed[o]["truth"]), 4),
+                   "ci": wilson(reviewed[o]["per_t"][t]["tp"], reviewed[o]["truth"])}
+                  for o in OBJECTS for t in thresholds]},
+        {"id": "synth_label_yield", "title": f"Synthetic images with a teacher box >= {teacher['threshold']}",
+         "unit": "rate", "domain": [0, 1], "better": "higher", "decimals": 2,
+         "rows": [{"label": f"{o} ({y['n']:,} images)", "value": round(y["k"] / y["n"], 4), "ci": wilson(y["k"], y["n"])}
+                  for o, y in yields.items()]},
     ]
     dotbars = [{
         "id": "clip_sim_by_setting", "title": "CLIP similarity of generated images to real ESP32 photos",
@@ -165,7 +245,12 @@ def build(args: argparse.Namespace) -> dict:
          "key_result": f"{column_label(chosen)}: CLIP sim {sims[chosen].mean():.3f}, found-rate {k_ch / n_ch:.2f}; "
                        "default for cup and backpack"},
         {"title": "Synthetic sets: cup and backpack (2,000 each)", "status": args.synth_status,
-         "status_text": "sd15_lcm_esp32v2", "key_result": "for the synth_only and synth_real conditions"},
+         "status_text": args.synth_set,
+         "key_result": ", ".join(f"{o} {y['k'] / y['n']:.0%} labeled" for o, y in yields.items())
+                       + f" at {teacher['threshold']}; in the gallery for review"},
+        {"title": "Real ESP32 ground truth (hand-reviewed)", "status": "closed", "status_text": "590 photos",
+         "key_result": ", ".join(f"{o} {reviewed[o]['truth']}" for o in OBJECTS)
+                       + f" boxes; {sum(reviewed[o]['drawn'] for o in OBJECTS)} drawn by hand"},
         {"title": "Domain LoRA v3 (more photos of people)", "status": "registered",
          "status_text": "waiting for photos", "key_result": "v2 rarely draws people; person still uses v1"},
     ]
@@ -173,8 +258,10 @@ def build(args: argparse.Namespace) -> dict:
         "Generation: SD 1.5 (stable-diffusion-v1-5) + LCM-LoRA, 6 steps, fp32, 512x512, on a GTX 1080 Ti.",
         (f"LoRA comparison: {n_per_obj} images per object per setting, identical prompts and seeds; "
          f"teacher {teacher['name']} at {teacher['threshold']}."),
-        ("Teacher recall on real photos is an upper bound: it assumes every photo in a one-object session "
-         "shows that object and does not check where the box is."),
+        ("'Teacher recall (one-object sessions)' is an upper bound: it assumes every photo in a session "
+         "shows that object and does not check where the box is. The hand-reviewed figures replace it."),
+        ("Hand review: the owner marked every teacher box on the real photos good or bad in the gallery and "
+         "drew the objects the teacher missed; unmarked boxes count as wrong."),
     ]
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                             check=False).stdout.strip()
@@ -195,7 +282,11 @@ def main() -> None:
     parser.add_argument("--labels-dir", default="data/labels/owlv2")
     parser.add_argument("--session-threshold", type=float, default=0.2)
     parser.add_argument("--student-eval", default="runs/cup/real_only/seed0/eval.json")
-    parser.add_argument("--synth-status", default="running",
+    parser.add_argument("--verdicts", default="data/review/verdicts/real_esp32cam.json",
+                        help="gallery verdict export for the real photos")
+    parser.add_argument("--review-threshold", type=float, default=0.2)
+    parser.add_argument("--synth-set", default="sd15_lcm_esp32v2")
+    parser.add_argument("--synth-status", default="closed",
                         choices=["running", "closed", "fail", "partial", "registered", "reference"])
     args = parser.parse_args()
     doc = build(args)
