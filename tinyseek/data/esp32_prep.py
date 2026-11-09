@@ -76,10 +76,10 @@ def cull(
     return entries
 
 
-def coco_images(root: Path, entries: list[dict]) -> dict:
-    """Kept photos as a COCO file with no annotations, for teacher labeling."""
+def coco_images(root: Path, entries: list[dict], kept_only: bool = True) -> dict:
+    """Photos (kept only, or all) as a COCO file with no annotations."""
     images = []
-    for i, e in enumerate((e for e in entries if e["keep"]), start=1):
+    for i, e in enumerate((e for e in entries if e["keep"] or not kept_only), start=1):
         with Image.open(root / e["file"]) as im:
             w, h = im.size
         images.append({"id": i, "file_name": e["file"], "width": w, "height": h})
@@ -95,6 +95,8 @@ def main() -> None:
     parser.add_argument("--dup-bits", type=int, default=24, help="max differing hash bits (of 256) for a duplicate")
     parser.add_argument("--coco", type=Path,
                         help="also write the kept photos as a COCO image list (no annotations)")
+    parser.add_argument("--coco-all", type=Path,
+                        help="also write every photo, kept or not, as a COCO image list (ground-truth universe)")
     parser.add_argument("--exclude", type=Path,
                         help="text file of photos to drop by hand: '<session>/<file>  # why' per line")
     args = parser.parse_args()
@@ -119,6 +121,9 @@ def main() -> None:
     if args.coco:
         args.coco.write_text(json.dumps(coco_images(args.root, entries)))
         print(f"COCO image list -> {args.coco}")
+    if args.coco_all:
+        args.coco_all.write_text(json.dumps(coco_images(args.root, entries, kept_only=False)))
+        print(f"COCO list of all photos -> {args.coco_all}")
 
 
 if __name__ == "__main__":

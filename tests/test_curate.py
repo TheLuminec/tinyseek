@@ -1,4 +1,15 @@
-from tinyseek.label.curate import box_id, curate
+from tinyseek.label.curate import box_id, curate, with_images
+
+
+def test_with_images_adds_unlabeled_photos_for_hand_boxes():
+    coco = {"images": [{"id": 3, "file_name": "a.jpg"}], "categories": [{"id": 1, "name": "person"}],
+            "annotations": []}
+    universe = {"images": [{"id": 1, "file_name": "a.jpg"}, {"id": 2, "file_name": "b.jpg"}]}
+    extended = with_images(coco, universe)
+    assert [(i["id"], i["file_name"]) for i in extended["images"]] == [(3, "a.jpg"), (4, "b.jpg")]
+    out, counts = curate(extended, {}, 0.0, unreviewed="drop",
+                         added=[{"file": "b.jpg", "box_id": "u1", "label": "person", "bbox": [1, 2, 3, 4]}])
+    assert counts["hand_added"] == 1 and out["annotations"][0]["image_id"] == 4
 
 
 def test_box_id_is_stable_under_rounding():

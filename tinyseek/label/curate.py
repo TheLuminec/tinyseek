@@ -48,6 +48,18 @@ def load_added(paths: list[Path]) -> list[dict]:
     return added
 
 
+def with_images(coco: dict, universe: dict) -> dict:
+    """Extend a label file's image list with images it lacks (keeping existing ids)."""
+    have = {img["file_name"] for img in coco["images"]}
+    next_id = max((img["id"] for img in coco["images"]), default=0) + 1
+    extra = []
+    for img in universe["images"]:
+        if img["file_name"] not in have:
+            extra.append(dict(img, id=next_id))
+            next_id += 1
+    return dict(coco, images=coco["images"] + extra)
+
+
 def curate(
     coco: dict, verdicts: dict[tuple[str, str], str], threshold: float, unreviewed: str = "threshold",
     added: list[dict] | None = None,
@@ -94,10 +106,16 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.0)
     parser.add_argument("--unreviewed", choices=["threshold", "drop"], default="threshold",
                         help="drop: keep only boxes marked good (a fully reviewed set)")
+    parser.add_argument("--images", type=Path,
+                        help="COCO image list to label (e.g. every photo, kept or culled); images the teacher "
+                             "never saw get only hand-drawn boxes")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    curated, counts = curate(json.loads(args.raw.read_text()), load_verdicts(args.verdicts), args.threshold,
+    coco = json.loads(args.raw.read_text())
+    if args.images:
+        coco = with_images(coco, json.loads(args.images.read_text()))
+    curated, counts = curate(coco, load_verdicts(args.verdicts), args.threshold,
                               args.unreviewed, load_added(args.verdicts))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(curated))
