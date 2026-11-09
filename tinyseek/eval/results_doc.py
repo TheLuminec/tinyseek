@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 OBJECTS = ("person", "cup", "backpack")
+SHORT = {"backpack": "bag"}  # dot-bar sublabels are narrow; the legend keeps the full name
 # Real sessions that hold one object in every photo (data/esp32cam/sessions.csv).
 OBJECT_SESSIONS = {"session_013": ("backpack", "black backpack"), "session_014": ("backpack", "gray backpack"),
                    "session_016": ("cup", "white frosted cup"), "session_017": ("cup", "clear glass cup")}
@@ -147,11 +148,11 @@ def build(args: argparse.Namespace) -> dict:
     ]
     dotbars = [{
         "id": "clip_sim_by_setting", "title": "CLIP similarity of generated images to real ESP32 photos",
-        "unit": "cosine", "baseline": 0.5, "decimals": 3, "points_label": "generated images",
+        "unit": "cosine", "baseline": 0.5, "domain": [0.4, 1], "decimals": 3, "points_label": "generated images",
         "series_colors": {"base": "#888888", "lora": "#1f5fbf"},
         "variants": [{"key": o, "label": o, "fill": "solid"} for o in OBJECTS],
         "groups": [{"label": column_label(c), "color_key": "base" if c == "base" else "lora",
-                    "bars": [{"variant": o, "sublabel": o, "value": round(float(np.mean(clip[col_key(c)][o])), 4),
+                    "bars": [{"variant": o, "sublabel": SHORT.get(o, o), "value": round(float(np.mean(clip[col_key(c)][o])), 4),
                               "ci": bootstrap(np.array(clip[col_key(c)][o])), "points": clip[col_key(c)][o]}
                              for o in OBJECTS]} for c in columns],
     }]
