@@ -21,3 +21,7 @@ def test_curate_applies_verdicts():
     assert counts == {"good": 1, "bad": 1, "threshold_kept": 1, "threshold_dropped": 1}
     assert out["annotations"][0]["verified"] is True
     assert out["annotations"][1]["verified"] is False
+
+    only_good, counts = curate(coco, verdicts, threshold=0.3, unreviewed="drop")
+    assert [a["bbox"][0] for a in only_good["annotations"]] == [10.2]
+    assert counts["threshold_kept"] == 0 and counts["threshold_dropped"] == 2
