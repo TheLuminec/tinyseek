@@ -12,7 +12,8 @@ Index layout:
   {"project": "tinyseek", "set": ..., "kind": "real" | "synthetic", "image_root": <abs dir>,
    "labels": [...], "teacher": ..., "generated": <iso time>,
    "items": [{"file", "width", "height", "text", "seed", "session",
-              "tags": {...}, "boxes": [{"label", "score", "bbox": [x, y, w, h]}]}]}
+              "tags": {...}, "boxes": [{"id", "label", "score", "bbox": [x, y, w, h]}]}]}
+Box ids come from tinyseek.label.curate.box_id, so gallery verdicts map back onto teacher boxes.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from tinyseek.label.curate import box_id
+
 LABELS = ("person", "cup", "backpack")
 
 
@@ -36,9 +39,15 @@ def load_boxes(label_files: dict[str, Path]) -> dict[str, list[dict]]:
             continue
         coco = json.loads(path.read_text())
         names = {img["id"]: img["file_name"] for img in coco["images"]}
-        for a in coco["annotations"]:
-            boxes.setdefault(names[a["image_id"]], []).append(
-                {"label": label, "score": round(a["score"], 4), "bbox": [round(v, 1) for v in a["bbox"]]})
+        for a in sorted(coco["annotations"], key=lambda a: -a["score"]):
+            bid = box_id(label, a["bbox"])
+            image_boxes = boxes.setdefault(names[a["image_id"]], [])
+            # Ids must be unique per image; two boxes with one id are the same box to the
+            # pixel, so keep the higher-scoring one (curation gives both the same verdict).
+            if any(b["id"] == bid for b in image_boxes):
+                continue
+            image_boxes.append({"id": bid, "label": label, "score": round(a["score"], 4),
+                                "bbox": [round(v, 1) for v in a["bbox"]]})
     for bs in boxes.values():
         bs.sort(key=lambda b: -b["score"])
     return boxes
