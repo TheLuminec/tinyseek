@@ -58,6 +58,15 @@ python -m tinyseek.label.merge --out data/esp32cam/draft_labels.json \
     data/labels/owlv2/esp32cam_person_raw.json:0.15 data/labels/owlv2/esp32cam_cup_raw.json:0.2 \
     data/labels/owlv2/esp32cam_backpack_raw.json:0.3
 
+# Hand review in the Avalon Monitor gallery (#/research/tinyseek; left-click box = good, right = bad):
+python -m tinyseek.eval.review_export real --out data/review/esp32cam.json         # or: synth --prompt cup --synth-set ...
+python ~/Projects/avalon-monitor/tools/gallery_push.py data/review/esp32cam.json   # venv python, for thumbnails
+python3 ~/Projects/avalon-monitor/tools/gallery_verdicts.py tinyseek real/esp32cam \
+    --out data/review/verdicts/real_esp32cam.json
+python -m tinyseek.label.curate --raw data/labels/owlv2/esp32cam_cup_raw.json \
+    --verdicts data/review/verdicts/real_esp32cam.json --threshold 0.2 \
+    --out data/labels/owlv2/esp32cam_cup_t0.2_curated.json   # good: kept, bad: dropped, rest thresholded
+
 # 2. Synthetic images (resumable; ~2.4 s/image on a 1080 Ti in fp32; uses the domain LoRA)
 python -m tinyseek.generate.sample prompt=cup num_images=2000 synth_set=sd15_lcm_v0
 
