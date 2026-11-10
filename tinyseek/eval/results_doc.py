@@ -204,7 +204,8 @@ def build(args: argparse.Namespace) -> dict:
            "result": f"AP@0.5 ({o}), synthetic + COCO training",
            "metric": "mean over 3 seeds, 590 hand-reviewed camera photos", "n": 590,
            "value": sweep[o]["esp32_real"]["synth_real"]["ap50"]["mean"],
-           "ci": seed_range(sweep[o]["esp32_real"]["synth_real"]["ap50"]), "chance": None,
+           "ci": seed_range(sweep[o]["esp32_real"]["synth_real"]["ap50"]), "ci_label": "seed min-max",
+           "chance": None,
            "comparator": {"label": "COCO only", "value": sweep[o]["esp32_real"]["real_only"]["ap50"]["mean"]},
            "compliance": "configs/synth_real.yaml vs real_only.yaml, seeds 0-2; interval = seed min-max; "
                          "the LoRA saw these photos (see notes)"}
@@ -232,7 +233,7 @@ def build(args: argparse.Namespace) -> dict:
                  "ci": seed_range(sweep[o][test_set][c]["ap50"])}
                 for o in SWEEP_OBJECTS if o in sweep for c in conditions if c in sweep[o].get(test_set, {})]
         top = max([r["ci"][1] for r in rows] + [0.01])
-        bars.append({"id": f"student_ap50_{test_set}", "title": title, "unit": "AP@0.5",
+        bars.append({"id": f"student_ap50_{test_set}", "title": title, "unit": "AP@0.5", "ci_label": "seed min-max",
                      "domain": [0, round(min(1.0, top * 1.15), 2)], "better": "higher", "decimals": 3, "rows": rows})
     bars += [
         {"id": "teacher_precision_real_reviewed", "title": "Teacher precision on real ESP32 photos (hand-reviewed)",
