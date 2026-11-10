@@ -53,8 +53,9 @@ def lr_at(step: int, total: int, warmup: int, base_lr: float) -> float:
 
 
 def run_dir_for(cfg: dict) -> Path:
+    """runs/<prompt>/<condition>/seed<n>, or ``run_name`` with {placeholders} filled from the config."""
     name = cfg.get("run_name") or f"{cfg['prompt']}/{cfg.get('condition', 'custom')}/seed{cfg['seed']}"
-    return Path(cfg["run_root"]) / name
+    return Path(cfg["run_root"]) / fill(name, cfg)
 
 
 def train(cfg: dict) -> dict:

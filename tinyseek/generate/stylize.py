@@ -110,6 +110,16 @@ def compare(args: argparse.Namespace, cfg: dict) -> dict:
     del t2i, i2i
     torch.cuda.empty_cache()
 
+    # Simulated camera (tinyseek.generate.camsim) on plain SD, and on a stylized column.
+    from tinyseek.generate.camsim import PRESETS, distort_box, simulate
+
+    sim_sources = {f"camsim {p}": ("plain SD", PRESETS[p]) for p in args.camsim}
+    if args.camsim_on is not None:
+        sim_sources[f"camsim camera on stylized {args.camsim_on}"] = (f"stylized {args.camsim_on}", PRESETS["camera"])
+    for label, (source, sim) in sim_sources.items():
+        columns[label] = [simulate(im, [], sim, np.random.default_rng([cfg["seed"], i]))[0]
+                          for i, im in enumerate(columns[source])]
+
     for label, images in columns.items():
         col_dir = out / label.replace(" ", "_")
         col_dir.mkdir(exist_ok=True)
@@ -137,20 +147,24 @@ def compare(args: argparse.Namespace, cfg: dict) -> dict:
                             "real_sim": round(float(np.mean([sims[label][i] for i in idx])), 4)}
         report["columns"][label] = {"real_sim": round(float(sims[label].mean()), 4), **pixel_stats(images),
                                     "per_object": per_obj}
-    # Box survival: plain-SD teacher boxes still present (IoU >= 0.5, teacher score >= 0.2) after stylizing.
-    for s in args.strengths:
-        label = f"stylized {s}"
+    # Box survival: plain-SD teacher boxes (moved through the camera simulation's distortion
+    # where one was applied) still found by the teacher (IoU >= 0.5, score >= 0.2) afterwards.
+    size = (cfg["resolution"], cfg["resolution"])
+    derived = {f"stylized {s}": 0.0 for s in args.strengths}
+    derived.update({label: sim.k for label, (_, sim) in sim_sources.items()})
+    for label, k in derived.items():
         for obj in args.objects:
             relaxed = teacher_boxes(teacher, [columns[label][i] for i, (o, _) in enumerate(jobs) if o == obj],
                                     prompts["prompts"][obj]["teacher_text"], 0.2)
             kept = total = 0
             for src, new in zip(found_boxes[("plain SD", obj)], relaxed):
-                k, n = box_survival(src, new)
-                kept, total = kept + k, total + n
+                moved = [b for b in (distort_box(b, k, size) for b in src) if b is not None]
+                n_kept, n = box_survival(moved, new)
+                kept, total = kept + n_kept, total + n
             report["columns"][label]["per_object"][obj]["box_survival"] = round(kept / max(1, total), 3)
     (out / "compare.json").write_text(json.dumps(report, indent=1))
 
-    cell, rows = 160, [i for i, (o, k) in enumerate(jobs) if k < 4]
+    cell, rows = 128, [i for i, (o, k) in enumerate(jobs) if k < 3]
     sheet = Image.new("RGB", (cell * len(columns), cell * len(rows) + 20), (20, 20, 20))
     draw = ImageDraw.Draw(sheet)
     for c, label in enumerate(columns):
@@ -187,6 +201,8 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=[32, 16], help="images per object")
     parser.add_argument("--strengths", type=float, nargs="+", default=[0.3, 0.45, 0.6])
     parser.add_argument("--teacher-threshold", type=float, default=0.3)
+    parser.add_argument("--camsim", nargs="*", default=[], help="camera-simulation presets applied to plain SD")
+    parser.add_argument("--camsim-on", type=float, help="also simulate the camera on this stylized strength")
     parser.add_argument("--real", default="data/esp32cam/kept_coco.json")
     parser.add_argument("--real-images", default="data/esp32cam/raw")
     parser.add_argument("--src", help="set to stylize (a plain-SD set)")
