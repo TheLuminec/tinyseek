@@ -1,0 +1,9 @@
+# Synthetic-only detector scored on photos its domain LoRA never saw: sessions 013/014
+# (227 hand-reviewed photos, 271 backpack boxes). Train with synth_set=<set from the held-out
+# LoRA (configs/lora_v2_holdout_013_014.yaml)> and compare against the same metric for sets
+# from LoRA v2, which did see these photos.
+base: synth_only.yaml
+condition: heldout_013_014
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s013_014.json, images: esp32cam/raw}

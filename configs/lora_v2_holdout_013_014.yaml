@@ -1,0 +1,6 @@
+# Held-out check for the 2026-11-10 finding: LoRA v2's recipe without the backpack sessions
+# 013/014 (281 of v2's 508 photos), so detectors trained on its images can be scored on photos
+# the LoRA never saw (configs/heldout_013_014.yaml). Captions = captions_v2 minus those sessions.
+base: lora_v2.yaml
+name: esp32cam_v2_holdout_013_014
+captions: data/esp32cam/captions_v2_holdout_013_014.jsonl
