@@ -28,7 +28,8 @@ def run_one(condition: str, prompt: str, seed: int, overrides: list[str], dry_ru
         return 0
     cmd = [sys.executable, "-u", "-m", "tinyseek.train.train", "--config", f"configs/{condition}.yaml", *args]
     if shutil.which("avm"):
-        cmd = ["avm", "run", f"tinyseek train {prompt} {condition} seed{seed}", "--gpu", "--exclusive", "--wait",
+        name = run_dir.relative_to(cfg["run_root"]).as_posix().replace("/", " ")
+        cmd = ["avm", "run", f"tinyseek train {name}", "--gpu", "--exclusive", "--wait",
                "--", *cmd]
     print(" ".join(cmd), flush=True)
     return 0 if dry_run else subprocess.run(cmd, check=False).returncode
