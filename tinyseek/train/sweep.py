@@ -53,8 +53,9 @@ def main() -> None:
     if failed:
         print("failed runs: " + ", ".join(failed))
     if not args.dry_run:
+        # Its own file: runs/summary.json is the four-condition table results_doc reads.
         subprocess.run([sys.executable, "-m", "tinyseek.eval.summarize", "--prompts", *args.prompts,
-                        "--conditions", *args.conditions], check=False)
+                        "--conditions", *args.conditions, "--out", "runs/summary_last_sweep.json"], check=False)
     sys.exit(1 if failed else 0)
 
 
