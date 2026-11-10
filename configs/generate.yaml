@@ -15,6 +15,9 @@ lcm_lora: latent-consistency/lcm-lora-sdv1-5
 #   v1 step 500  x0.6       0.669   0.53/0.84/0.53
 #   v2 step 2000 x0.8       0.748   0.44/0.91/0.69   <- default
 # v2 (configs/lora_v2.yaml) draws people less often (few people in its photos), so person keeps v1.
+# v3 (851 photos, adds a second building) was tested 2026-11-10 and NOT adopted: CLIP similarity
+# barely moved (0.763 vs 0.760) but the teacher found-rate fell for car (0.44 vs 0.62), cup and
+# backpack; it learned the empty garages and hallways and draws empty scenes (16 images per object).
 domain_lora: runs/lora/esp32cam_v2/checkpoint-2000
 domain_lora_scale: 0.8
 domain_trigger: esp32cam photo    # caption prefix the domain LoRA was trained with
