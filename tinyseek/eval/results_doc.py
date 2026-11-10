@@ -124,6 +124,13 @@ def synth_yield(labels_dir: Path, synth_set: str, objects: tuple[str, ...], thre
     return out
 
 
+SWEEP_OBJECTS = ("backpack", "cup")
+
+
+def seed_range(cell: dict) -> list[float]:
+    return [round(min(cell["values"]), 4), round(max(cell["values"]), 4)]
+
+
 def column_label(col: str) -> str:
     return {"base": "plain SD 1.5"}.get(col, col.replace("esp32cam_", "").replace("_", " "))
 
@@ -145,6 +152,7 @@ def build(args: argparse.Namespace) -> dict:
     chosen, previous = args.chosen, args.previous
     recall = session_recall(Path(args.labels_dir), args.session_threshold)
     student = json.loads(Path(args.student_eval).read_text())["coco_val"]
+    sweep = json.loads(Path(args.summary).read_text()) if Path(args.summary).exists() else {}
 
     def found_total(col: str) -> tuple[int, int]:
         k = sum(round(found(col)[o] * n_per_obj) for o in OBJECTS)
@@ -192,6 +200,15 @@ def build(args: argparse.Namespace) -> dict:
          "metric": f"share of generated images with a box >= {teacher['threshold']}, cup and backpack pooled",
          "n": y_n, "value": round(y_k / max(1, y_n), 4), "ci": wilson(y_k, y_n), "chance": None, "comparator": None,
          "compliance": f"{args.synth_set}, 2,000 images per object"},
+        *[{"id": f"student_esp32_{o}_synth_real_ap50", "group": "Student detector on real ESP32 photos",
+           "result": f"AP@0.5 ({o}), synthetic + COCO training",
+           "metric": "mean over 3 seeds, 590 hand-reviewed camera photos", "n": 590,
+           "value": sweep[o]["esp32_real"]["synth_real"]["ap50"]["mean"],
+           "ci": seed_range(sweep[o]["esp32_real"]["synth_real"]["ap50"]), "chance": None,
+           "comparator": {"label": "COCO only", "value": sweep[o]["esp32_real"]["real_only"]["ap50"]["mean"]},
+           "compliance": "configs/synth_real.yaml vs real_only.yaml, seeds 0-2; interval = seed min-max; "
+                         "the LoRA saw these photos (see notes)"}
+          for o in SWEEP_OBJECTS if o in sweep],
         {"id": "student_cup_real_only_ap50", "group": "Student detector", "result": "COCO mAP@0.5 (cup)",
          "metric": "AP@0.5, 5,000 COCO val2017 images", "n": student["num_images"], "value": round(student["ap50"], 4),
          "ci": None, "chance": None,
@@ -208,6 +225,15 @@ def build(args: argparse.Namespace) -> dict:
          "unit": "rate", "domain": [0, 1], "better": "higher", "decimals": 2,
          "rows": [{"label": f"{r['label']} (n={r['n']})", "value": r["value"], "ci": r["ci"]} for r in recall]},
     ]
+    conditions = ("real_only", "teacher_real", "synth_only", "synth_real")
+    for test_set, title in (("esp32_real", "Student AP@0.5 on real ESP32 photos (hand-reviewed)"),
+                            ("coco_val", "Student AP@0.5 on COCO val2017")):
+        rows = [{"label": f"{o} · {c}", "value": sweep[o][test_set][c]["ap50"]["mean"],
+                 "ci": seed_range(sweep[o][test_set][c]["ap50"])}
+                for o in SWEEP_OBJECTS if o in sweep for c in conditions if c in sweep[o].get(test_set, {})]
+        top = max([r["ci"][1] for r in rows] + [0.01])
+        bars.append({"id": f"student_ap50_{test_set}", "title": title, "unit": "AP@0.5",
+                     "domain": [0, round(min(1.0, top * 1.15), 2)], "better": "higher", "decimals": 3, "rows": rows})
     bars += [
         {"id": "teacher_precision_real_reviewed", "title": "Teacher precision on real ESP32 photos (hand-reviewed)",
          "unit": "precision", "domain": [0, 1], "better": "higher", "decimals": 2,
@@ -251,10 +277,22 @@ def build(args: argparse.Namespace) -> dict:
         {"title": "Real ESP32 ground truth (hand-reviewed)", "status": "closed", "status_text": "590 photos",
          "key_result": ", ".join(f"{o} {reviewed[o]['truth']}" for o in OBJECTS)
                        + f" boxes; {sum(reviewed[o]['drawn'] for o in OBJECTS)} drawn by hand"},
+        {"title": "Training conditions: cup and backpack, 3 seeds", "status": "closed", "status_text": "23 runs",
+         "key_result": "; ".join(f"{o} on camera photos: COCO only {sweep[o]['esp32_real']['real_only']['ap50']['mean']:.3f}, "
+                                 f"synthetic {sweep[o]['esp32_real']['synth_only']['ap50']['mean']:.3f}, "
+                                 f"both {sweep[o]['esp32_real']['synth_real']['ap50']['mean']:.3f}"
+                                 for o in SWEEP_OBJECTS if o in sweep)},
+        {"title": "Clean camera test set (another building)", "status": "registered",
+         "status_text": "waiting for photos", "key_result": "photos never used for LoRA training, to remove the leak"},
         {"title": "Domain LoRA v3 (more photos of people)", "status": "registered",
          "status_text": "waiting for photos", "key_result": "v2 rarely draws people; person still uses v1"},
     ]
     notes = [
+        ("Caveat: the domain LoRA that styled the synthetic images was trained on the same ESP32 photos used "
+         "as the camera test set (including the backpack and cup sessions). The detector never saw them, but "
+         "the image generator did, so synthetic gains on camera photos are likely overstated until a held-out "
+         "set (photos from another building) is measured."),
+        "Student condition figures: bars = mean over seeds 0-2, whiskers = seed min-max; 128 px input.",
         "Generation: SD 1.5 (stable-diffusion-v1-5) + LCM-LoRA, 6 steps, fp32, 512x512, on a GTX 1080 Ti.",
         (f"LoRA comparison: {n_per_obj} images per object per setting, identical prompts and seeds; "
          f"teacher {teacher['name']} at {teacher['threshold']}."),
@@ -282,6 +320,7 @@ def main() -> None:
     parser.add_argument("--labels-dir", default="data/labels/owlv2")
     parser.add_argument("--session-threshold", type=float, default=0.2)
     parser.add_argument("--student-eval", default="runs/cup/real_only/seed0/eval.json")
+    parser.add_argument("--summary", default="runs/summary.json", help="tinyseek.eval.summarize output")
     parser.add_argument("--verdicts", default="data/review/verdicts/real_esp32cam.json",
                         help="gallery verdict export for the real photos")
     parser.add_argument("--review-threshold", type=float, default=0.2)
