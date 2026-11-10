@@ -129,9 +129,9 @@ SOURCE_VARIANTS = (  # image-source sweep run names -> chart labels
     ("real_only", "COCO real photos (reference)"),
     ("synth_only_v2first1k", "domain LoRA v2"),
     ("synth_only_plain1k", "plain SD"),
-    ("synth_only_plain1k_camsim", "plain SD + camera simulation"),
-    ("synth_only_plain1k_sty075", "plain SD + LoRA img2img 0.75"),
-    ("synth_only_plain1k_sty075_camsim", "img2img 0.75 + camera simulation"),
+    ("synth_only_plain1k_camsim", "plain SD + camera sim"),
+    ("synth_only_plain1k_sty075", "LoRA img2img 0.75"),
+    ("synth_only_plain1k_sty075_camsim", "LoRA img2img 0.75 + camera sim"),
 )
 
 
@@ -267,7 +267,7 @@ def build(args: argparse.Namespace) -> dict:
     source_rows = [(c, label) for c, label in SOURCE_VARIANTS if c in source]
     if source_rows:
         bars.append({
-            "id": "synth_source_backpack_esp32", "unit": "AP@0.5", "better": "higher", "decimals": 3,
+            "id": "synth_source_backpack_esp32", "unit": "AP@0.5", "better": "higher", "decimals": 4,
             "title": "Synthetic-only backpack detector on real ESP32 photos, by image source (1,000 images)",
             "ci_label": "seed min-max",
             "domain": [0, round(max(max(source[c]["ap50"]["values"]) for c, _ in source_rows) * 1.15 + 0.005, 2)],
@@ -320,9 +320,9 @@ def build(args: argparse.Namespace) -> dict:
          "the image generator did, so synthetic gains on camera photos are likely overstated until a held-out "
          "set (photos from another building) is measured."),
         ("Image-source sweep: synthetic-only detectors score ~0 on camera photos without the domain LoRA, "
-         "even with the camera's distortion, colour and noise simulated; with it, 0.128 (1,000 images) to "
-         "0.200 (2,000 curated). The LoRA's learned scenes and objects, from the test photos themselves, "
-         "carry the gain."),
+         "even with the camera's distortion, colour and noise simulated; with it, 0.128 (1,000 images, this "
+         "figure) to 0.200 (2,000 curated images: the backpack synth_only row of the training-condition "
+         "figure). The LoRA's learned scenes and objects, from the test photos themselves, carry the gain."),
         "Student condition figures: bars = mean over seeds 0-2, whiskers = seed min-max; 128 px input.",
         "Generation: SD 1.5 (stable-diffusion-v1-5) + LCM-LoRA, 6 steps, fp32, 512x512, on a GTX 1080 Ti.",
         (f"LoRA comparison: {n_per_obj} images per object per setting, identical prompts and seeds; "
