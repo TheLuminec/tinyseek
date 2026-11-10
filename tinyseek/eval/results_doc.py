@@ -125,6 +125,14 @@ def synth_yield(labels_dir: Path, synth_set: str, objects: tuple[str, ...], thre
 
 
 SWEEP_OBJECTS = ("backpack", "cup")
+SOURCE_VARIANTS = (  # image-source sweep run names -> chart labels
+    ("real_only", "COCO real photos (reference)"),
+    ("synth_only_v2first1k", "domain LoRA v2"),
+    ("synth_only_plain1k", "plain SD"),
+    ("synth_only_plain1k_camsim", "plain SD + camera simulation"),
+    ("synth_only_plain1k_sty075", "plain SD + LoRA img2img 0.75"),
+    ("synth_only_plain1k_sty075_camsim", "img2img 0.75 + camera simulation"),
+)
 
 
 def seed_range(cell: dict) -> list[float]:
@@ -253,6 +261,18 @@ def build(args: argparse.Namespace) -> dict:
          "rows": [{"label": f"{o} ({y['n']:,} images)", "value": round(y["k"] / y["n"], 4), "ci": wilson(y["k"], y["n"])}
                   for o, y in yields.items()]},
     ]
+    source = {}
+    if Path(args.source_summary).exists():
+        source = json.loads(Path(args.source_summary).read_text()).get("backpack", {}).get("esp32_real", {})
+    source_rows = [(c, label) for c, label in SOURCE_VARIANTS if c in source]
+    if source_rows:
+        bars.append({
+            "id": "synth_source_backpack_esp32", "unit": "AP@0.5", "better": "higher", "decimals": 3,
+            "title": "Synthetic-only backpack detector on real ESP32 photos, by image source (1,000 images)",
+            "ci_label": "seed min-max",
+            "domain": [0, round(max(max(source[c]["ap50"]["values"]) for c, _ in source_rows) * 1.15 + 0.005, 2)],
+            "rows": [{"label": label, "value": source[c]["ap50"]["mean"], "ci": seed_range(source[c]["ap50"])}
+                     for c, label in source_rows]})
     dotbars = [{
         "id": "clip_sim_by_setting", "title": "CLIP similarity of generated images to real ESP32 photos",
         "unit": "cosine", "baseline": 0.5, "domain": [0.4, 1], "decimals": 3, "points_label": "generated images",
@@ -283,8 +303,14 @@ def build(args: argparse.Namespace) -> dict:
                                  f"synthetic {sweep[o]['esp32_real']['synth_only']['ap50']['mean']:.3f}, "
                                  f"both {sweep[o]['esp32_real']['synth_real']['ap50']['mean']:.3f}"
                                  for o in SWEEP_OBJECTS if o in sweep)},
-        {"title": "Clean camera test set (another building)", "status": "registered",
-         "status_text": "waiting for photos", "key_result": "photos never used for LoRA training, to remove the leak"},
+        {"title": "Synthetic image source (backpack, 1,000 images, 3 seeds)", "status": "closed",
+         "status_text": "15 runs, 2026-11-10",
+         "key_result": "domain-LoRA images work on camera photos; plain SD, camera simulation and LoRA "
+                       "img2img stylizing all ~0: the gain is learned content, not the camera look"},
+        {"title": "Domain LoRA v3 (851 photos incl. a second building)", "status": "closed",
+         "status_text": "not adopted", "key_result": "barely closer to the camera, draws fewer objects (empty garages)"},
+        {"title": "Held-out camera test (photos the LoRA never saw)", "status": "registered",
+         "status_text": "next", "key_result": "separates real gains from leaked content"},
         {"title": "Domain LoRA v3 (more photos of people)", "status": "registered",
          "status_text": "waiting for photos", "key_result": "v2 rarely draws people; person still uses v1"},
     ]
@@ -293,6 +319,10 @@ def build(args: argparse.Namespace) -> dict:
          "as the camera test set (including the backpack and cup sessions). The detector never saw them, but "
          "the image generator did, so synthetic gains on camera photos are likely overstated until a held-out "
          "set (photos from another building) is measured."),
+        ("Image-source sweep: synthetic-only detectors score ~0 on camera photos without the domain LoRA, "
+         "even with the camera's distortion, colour and noise simulated; with it, 0.128 (1,000 images) to "
+         "0.200 (2,000 curated). The LoRA's learned scenes and objects, from the test photos themselves, "
+         "carry the gain."),
         "Student condition figures: bars = mean over seeds 0-2, whiskers = seed min-max; 128 px input.",
         "Generation: SD 1.5 (stable-diffusion-v1-5) + LCM-LoRA, 6 steps, fp32, 512x512, on a GTX 1080 Ti.",
         (f"LoRA comparison: {n_per_obj} images per object per setting, identical prompts and seeds; "
@@ -322,6 +352,8 @@ def main() -> None:
     parser.add_argument("--session-threshold", type=float, default=0.2)
     parser.add_argument("--student-eval", default="runs/cup/real_only/seed0/eval.json")
     parser.add_argument("--summary", default="runs/summary.json", help="tinyseek.eval.summarize output")
+    parser.add_argument("--source-summary", default="runs/summary_stylize_sweep.json",
+                        help="summarize output of the synthetic image-source sweep")
     parser.add_argument("--verdicts", default="data/review/verdicts/real_esp32cam.json",
                         help="gallery verdict export for the real photos")
     parser.add_argument("--review-threshold", type=float, default=0.2)
