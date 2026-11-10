@@ -25,9 +25,13 @@ def image_seed(seed: int, index: int) -> int:
 
 
 def text_prompt(spec: dict, scenes: list[str], seed: int, index: int) -> str:
-    """Deterministically pick a template and scene for image ``index``."""
+    """Deterministically pick a template and scene for image ``index``.
+
+    A prompt's own ``scenes`` list (e.g. parking garages for "car") replaces the shared one.
+    """
     rng = np.random.default_rng([seed, index])
     template = spec["sd_templates"][rng.integers(len(spec["sd_templates"]))]
+    scenes = spec.get("scenes") or scenes
     return template.format(scene=scenes[rng.integers(len(scenes))])
 
 

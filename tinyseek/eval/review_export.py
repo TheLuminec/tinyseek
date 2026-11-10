@@ -26,9 +26,14 @@ from pathlib import Path
 
 from PIL import Image
 
+from tinyseek.config import load_prompts
 from tinyseek.label.curate import box_id
 
-LABELS = ("person", "cup", "backpack")
+
+def all_labels() -> list[str]:
+    """Every prompt in configs/prompts.yaml; label files that don't exist yet are skipped."""
+    return list(load_prompts()["prompts"])
+
 
 
 def load_boxes(label_files: dict[str, Path]) -> dict[str, list[dict]]:
@@ -71,7 +76,7 @@ def real_index(data_root: Path, teacher: str) -> dict:
     if (cam / "sessions.csv").exists():
         with (cam / "sessions.csv").open() as f:
             sessions = {r["session"]: r["contents"] for r in csv.DictReader(f)}
-    boxes = load_boxes({lb: data_root / "labels" / teacher / f"esp32cam_{lb}_raw.json" for lb in LABELS})
+    boxes = load_boxes({lb: data_root / "labels" / teacher / f"esp32cam_{lb}_raw.json" for lb in all_labels()})
     items = []
     for e in manifest:
         w, h = size_of(cam / "raw" / e["file"])
@@ -122,7 +127,7 @@ def main() -> None:
         if not (args.prompt and args.synth_set):
             parser.error("synth needs --prompt and --synth-set")
         index = synthetic_index(args.data_root, args.prompt, args.synth_set, args.teacher)
-    index = {"project": "tinyseek", **index, "labels": list(LABELS), "teacher": args.teacher,
+    index = {"project": "tinyseek", **index, "labels": all_labels(), "teacher": args.teacher,
              "generated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(index))

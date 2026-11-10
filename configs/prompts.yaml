@@ -26,7 +26,42 @@ prompts:
       - "a photo of a backpack {scene}"
       - "a backpack {scene}, photo taken with a cheap phone camera"
       - "a person wearing a backpack {scene}, amateur photo"
+  chair:
+    coco_id: 62
+    teacher_text: "a chair"
+    sd_templates:
+      - "a photo of a chair {scene}"
+      - "chairs {scene}, photo taken with a cheap phone camera"
+      - "an empty chair {scene}, amateur photo"
+    scenes:  # replaces the shared list below for this prompt
+      - "in a classroom"
+      - "in a conference room"
+      - "in a student lounge"
+      - "in an office"
+      - "at a kitchen table"
+      - "in a living room"
+      - "in a hallway"
+      - "in a cafeteria"
+      - "next to a window"
+      - "in dim indoor lighting"
+  car:
+    coco_id: 3
+    teacher_text: "a car"
+    sd_templates:
+      - "a photo of a car {scene}"
+      - "parked cars {scene}, photo taken with a cheap phone camera"
+      - "a car {scene}, security camera footage"
+    scenes:
+      - "in a parking garage"
+      - "in a parking lot at night"
+      - "in a parking lot during the day"
+      - "on a city street"
+      - "in a driveway"
+      - "on a residential street at dusk"
+      - "under street lights"
+      - "in an underground garage"
 
+# Shared scenes; a prompt with its own `scenes` list uses that instead.
 scenes:
   - "on a kitchen table"
   - "on an office desk"
