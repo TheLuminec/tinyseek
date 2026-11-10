@@ -1,0 +1,7 @@
+# Domain LoRA v3: 851 camera photos (sessions 005-019), adding a second building (hallways,
+# lounges, classrooms, parking garage, night lot) to v2's apartment photos. Same recipe as v2,
+# a little longer for the extra photos.
+base: lora_v2.yaml
+name: esp32cam_v3
+captions: data/esp32cam/captions_v3.jsonl
+steps: 3000
