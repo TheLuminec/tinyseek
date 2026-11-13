@@ -54,6 +54,9 @@ PRESETS = {
     "only_tone": CamSim(k=0.0, vignette=0.0, noise=False),
     "only_vignette": CamSim(k=0.0, tone=False, noise=False),
     "only_noise": CamSim(k=0.0, tone=False, vignette=0.0),
+    # The ablation (2026-11-13) found the distortion harmful and tone matching helpful.
+    "tone_vignette": CamSim(k=0.0, noise=False),
+    "no_distort": CamSim(k=0.0),
 }
 
 

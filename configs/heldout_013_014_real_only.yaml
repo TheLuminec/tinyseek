@@ -1,0 +1,7 @@
+# Real COCO images only, scored on the held-out camera sessions 013/014 as well: the
+# real-data reference for the synthetic sets compared with configs/heldout_013_014.yaml.
+base: real_only.yaml
+condition: heldout_real_only
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s013_014.json, images: esp32cam/raw}

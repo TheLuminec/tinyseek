@@ -1,0 +1,7 @@
+# Synthetic plus real COCO images, scored on the held-out camera sessions 013/014 as well.
+# Pass synth_set=<set> (and label_variant="" for raw teacher labels), as with heldout_013_014.yaml.
+base: synth_real.yaml
+condition: heldout_synth_real
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s013_014.json, images: esp32cam/raw}
