@@ -12,6 +12,9 @@ num_images: 1000
 
 server: http://127.0.0.1:8188      # or set TINYSEEK_COMFY_URL
 workflow: configs/comfy/qwen_image_2.1_turbo.json   # API-format graph: 8 steps, cfg 1, euler
+model: qwen-image-2.1-turbo (int8 weights on the server)
+# Licence as reported by whoever installed the model on the server; not checked against the model card here.
+model_licence: qwen-research (research / non-commercial)
 # Where each per-image value goes in the workflow: [node id, input name].
 workflow_inputs:
   text: [text, prompt]
