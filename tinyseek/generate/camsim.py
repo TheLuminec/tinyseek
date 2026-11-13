@@ -40,6 +40,7 @@ class CamSim:
     luma: tuple[float, float] = (62.0, 72.0)
     contrast: tuple[float, float] = (34.0, 59.0)
     saturation: tuple[float, float] = (0.09, 0.24)
+    tone: bool = True                   # match brightness, contrast and saturation to the targets above
     vignette: float = 0.35              # darkening at the corners, 0..1
     noise: bool = True
 
@@ -48,6 +49,11 @@ PRESETS = {
     "mild": CamSim(k=0.2, vignette=0.2),
     "camera": CamSim(),
     "strong": CamSim(k=0.5, vignette=0.45),
+    # One part of "camera" at a time, to measure what each does to a detector.
+    "only_distort": CamSim(tone=False, vignette=0.0, noise=False),
+    "only_tone": CamSim(k=0.0, vignette=0.0, noise=False),
+    "only_vignette": CamSim(k=0.0, tone=False, noise=False),
+    "only_noise": CamSim(k=0.0, tone=False, vignette=0.0),
 }
 
 
@@ -140,7 +146,9 @@ def simulate(image: Image.Image, boxes: list[list[float]], sim: CamSim,
              rng: np.random.Generator) -> tuple[Image.Image, list[list[float] | None]]:
     out = distort(image, sim.k)
     new_boxes = [distort_box(b, sim.k, image.size) for b in boxes]
-    out = vignette(tone_and_colour(out, sim, rng), sim.vignette)
+    if sim.tone:
+        out = tone_and_colour(out, sim, rng)
+    out = vignette(out, sim.vignette)
     if sim.noise:
         out = sensor_noise(out, rng)
     return out, new_boxes
