@@ -7,7 +7,11 @@
 seed: 0
 prompt: backpack
 data_root: data
-synth_set: qwen21_turbo_v1         # bump the suffix whenever the workflow or the text below changes
+# Bump the suffix whenever the workflow or the text below changes. The first text (24+8 pilot
+# images, set qwen21_turbo_pilot, 2026-11-12) placed and framed the object as asked but drew
+# nearly every room as the same bare cream office; v2 describes each room's walls, floor and
+# furniture, varies the camera position, and drops "webcam" and "dull colours".
+synth_set: qwen21_turbo_v2
 num_images: 1000
 
 server: http://127.0.0.1:8188      # or set TINYSEEK_COMFY_URL
@@ -22,34 +26,47 @@ workflow_inputs:
   width: [latent, width]
   height: [latent, height]
 output_node: image
-width: 1184                        # ~1 MP at 4:3, the size the model was run at interactively
-height: 896
-save_width: 800                    # stored at the camera's frame width; null keeps the full size
+# Sampling time scales with the frame: ~62 s per image at 1184x896 (the size the model was run
+# at interactively) and ~33 s at 896x672 on the GTX 1080 Ti. Reloading the models is not the
+# cost: one job of 8 prompts took 61.9 s per image against 62.0 s as single jobs.
+width: 896
+height: 672
+save_width: 800                    # stored at the camera's frame size (800x600); null keeps the full size
+images_per_job: 1
 timeout_s: 900
 
 # One paragraph per image; every {field} is drawn from the lists below with the image's seed.
 template: >-
-  An ordinary, unremarkable snapshot of {location}, taken by a cheap fixed webcam left on a
-  shelf or table at about desk height, tilted slightly down and not aimed at anything in
-  particular. {subject} {placement}. It is {framing}. Around it is everyday clutter:
-  {clutter}. {lighting}. Plain wide-angle view with the whole scene in the same slightly soft
-  focus and no background blur, neutral white balance, dull natural colours. Casual and
-  unstaged, not a product photo or a stock photo. No people, no text, no watermark.
+  An ordinary, unremarkable snapshot of {location}. The picture was taken by a small camera
+  {viewpoint}, not aimed at anything in particular. {subject} {placement}. It is {framing}.
+  The place is lived-in and a little messy, with {clutter}. {lighting}. Plain wide-angle view
+  with the whole scene in the same slightly soft focus and no background blur, neutral white
+  balance, natural colours. Casual and unstaged, not a product photo or a stock photo. No
+  people, no text, no watermark.
 
 fields:
   location:
-    - a student bedroom
-    - a small home office
-    - a living room
-    - a kitchen with a dining table
-    - a hallway by the front door
-    - a university classroom
-    - a library study area
-    - an open-plan office
-    - a garage workshop
-    - a dorm room
-    - a break room with a few tables
-    - a basement storage room
+    - a student bedroom with posters on a pale blue wall, an unmade bed and a wooden floor
+    - a small home office with dark wood panelling, a bookcase and a patterned rug
+    - a living room with a brown sofa, a television and a red brick fireplace wall
+    - a kitchen with wooden cabinets, a tiled floor and a dining table
+    - a hallway by the front door with a staircase, a dark green wall and a doormat
+    - a university classroom with rows of desks, a projector screen and grey carpet
+    - a library study area with tall wooden bookshelves and long tables
+    - an open-plan office with cubicle partitions and blue carpet
+    - a garage workshop with a concrete floor, bare block walls and a workbench
+    - a dorm room with a bunk bed, a cluttered desk and a small fridge
+    - a break room with vending machines, a tiled floor and plastic chairs
+    - a basement storage room with exposed pipes, metal shelving and a concrete floor
+    - a laundry room with a washing machine, a drying rack and yellow walls
+    - an electronics lab with long benches, stools and equipment on shelves
+    - a building lobby with benches, large windows and a polished stone floor
+    - a child's bedroom with a colourful rug, toy boxes and patterned wallpaper
+  viewpoint:
+    - left on a table at about desk height, tilted slightly down
+    - left on a low shelf near the floor, looking across the room
+    - placed on a high shelf, looking down across the room
+    - sitting on a windowsill at chest height
   framing:
     - small in the picture and well off to the left side
     - small in the picture and well off to the right side
@@ -64,15 +81,17 @@ fields:
     - cables, papers, a jacket over a chair and a couple of cardboard boxes
     - shoes, a laundry basket, books and a charger on the floor
     - a monitor, a keyboard, mugs and stacks of paper
-    - chairs pushed in at odd angles, a bin and a whiteboard
+    - chairs pushed in at odd angles, a bin and a noticeboard
     - shelves of boxes, tools and plastic tubs
     - folded clothes, a fan, a lamp and an open drawer
     - grocery bags, a coat rack and an umbrella
+    - plants, a pile of magazines, a blanket and a pair of slippers
+    - sports gear, a bicycle helmet, a water bottle and a towel
   lighting:
     - Lit by ordinary ceiling lights at night
     - Daylight comes from a window on one side, and the window itself is overexposed
     - Dim evening light from a single lamp
-    - Flat fluorescent office lighting
+    - Flat fluorescent ceiling lighting
     - Overcast daylight, a little dim
     - Mixed daylight and ceiling light, uneven across the room
 

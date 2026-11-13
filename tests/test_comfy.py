@@ -132,7 +132,8 @@ def test_generate_stores_a_resumable_set(tmp_path, per_job, jobs):
         assert sent == [(r["prompt"], r["seed"]) for r in rows]   # same images whatever the job size
         assert sent == [(scene_prompt(cfg, i)[0], rows[i]["seed"]) for i in range(5)]
         assert [sum(n.startswith("image#") for n in g) for g in FakeComfy.graphs] == jobs
-        assert set(rows[0]["fields"]) == {"subject", "placement", "location", "framing", "clutter", "lighting"}
+        assert set(rows[0]["fields"]) == {"subject", "placement", "location", "framing", "clutter", "lighting",
+                                         "viewpoint"}
         assert (out / "workflow.json").exists() and (out / "config.yaml").exists()
 
         generate(dict(cfg, num_images=6))  # resumes: only the missing image is requested
