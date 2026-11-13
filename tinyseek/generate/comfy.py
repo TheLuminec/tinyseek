@@ -58,6 +58,39 @@ def patch_workflow(graph: dict, inputs: dict[str, list[str]], values: dict) -> d
     return out
 
 
+def per_image_nodes(graph: dict, inputs: dict[str, list[str]]) -> set[str]:
+    """Nodes that differ per image: those receiving a per-image value and everything downstream."""
+    varying = {node for node, _ in inputs.values()}
+    grew = True
+    while grew:
+        grew = False
+        for node_id, node in graph.items():
+            links = [v[0] for v in node["inputs"].values() if isinstance(v, list)]
+            if node_id not in varying and varying.intersection(links):
+                varying.add(node_id)
+                grew = True
+    return varying
+
+
+def batch_workflow(graph: dict, inputs: dict[str, list[str]], values: list[dict]) -> dict:
+    """One graph that makes ``len(values)`` images: the model loaders are shared and the
+    per-image nodes are repeated as ``<id>#<k>``. Run as a single job, the server loads the
+    text encoder once for all the texts and the image model once for all the samples,
+    where one job per image reloads both every time (they do not fit in VRAM together).
+    """
+    varying = per_image_nodes(graph, inputs)
+    out = {node_id: copy.deepcopy(node) for node_id, node in graph.items() if node_id not in varying}
+    for k, image_values in enumerate(values):
+        patched = patch_workflow(graph, inputs, image_values)
+        for node_id in varying:
+            node = patched[node_id]
+            for name, value in node["inputs"].items():
+                if isinstance(value, list) and value[0] in varying:
+                    node["inputs"][name] = [f"{value[0]}#{k}", *value[1:]]
+            out[f"{node_id}#{k}"] = node
+    return out
+
+
 class ComfyClient:
     def __init__(self, server: str, timeout_s: float = 900, poll_s: float = 1.0) -> None:
         self.server = server.rstrip("/")
@@ -96,8 +129,9 @@ class ComfyClient:
         query = urllib.parse.urlencode({k: ref.get(k, "") for k in ("filename", "subfolder", "type")})
         return Image.open(io.BytesIO(self._get("/view?" + query))).convert("RGB")
 
-    def generate(self, graph: dict, node: str) -> Image.Image:
-        return self.image(self.wait(self.submit(graph)), node)
+    def generate(self, graph: dict, nodes: list[str]) -> list[Image.Image]:
+        entry = self.wait(self.submit(graph))
+        return [self.image(entry, node) for node in nodes]
 
 
 def stored_size(image: Image.Image, save_width: int | None) -> Image.Image:
@@ -118,19 +152,24 @@ def generate(cfg: dict) -> Path:
     (out_dir / "workflow.json").write_text(json.dumps(graph, indent=1))
     client = ComfyClient(os.environ.get("TINYSEEK_COMFY_URL", cfg["server"]), cfg.get("timeout_s", 900))
 
+    per_job = max(1, cfg.get("images_per_job", 1))
     with (out_dir / "metadata.jsonl").open("a") as meta:
-        for done, i in enumerate(todo, 1):
-            text, chosen = scene_prompt(cfg, i)
-            seed = image_seed(cfg["seed"], i)
-            values = {"text": text, "seed": seed, "width": cfg["width"], "height": cfg["height"]}
+        for start in range(0, len(todo), per_job):
+            idx = todo[start : start + per_job]
+            scenes = [scene_prompt(cfg, i) for i in idx]
+            values = [{"text": text, "seed": image_seed(cfg["seed"], i), "width": cfg["width"],
+                       "height": cfg["height"]} for i, (text, _) in zip(idx, scenes)]
             started = time.monotonic()
-            image = client.generate(patch_workflow(graph, cfg["workflow_inputs"], values), cfg["output_node"])
-            seconds = time.monotonic() - started
-            stored_size(image, cfg.get("save_width")).save(out_dir / f"{i:06d}.jpg", quality=95)
-            meta.write(json.dumps({"index": i, "file_name": f"{i:06d}.jpg", "prompt": text, "seed": seed,
-                                   "fields": chosen, "seconds": round(seconds, 1)}) + "\n")
+            images = client.generate(batch_workflow(graph, cfg["workflow_inputs"], values),
+                                     [f"{cfg['output_node']}#{k}" for k in range(len(idx))])
+            seconds = (time.monotonic() - started) / len(idx)
+            for i, (text, chosen), value, image in zip(idx, scenes, values, images):
+                stored_size(image, cfg.get("save_width")).save(out_dir / f"{i:06d}.jpg", quality=95)
+                meta.write(json.dumps({"index": i, "file_name": f"{i:06d}.jpg", "prompt": text, "seed": value["seed"],
+                                       "fields": chosen, "seconds": round(seconds, 1), "job_images": len(idx)}) + "\n")
             meta.flush()
-            print(f"{cfg['prompt']} {done}/{len(todo)} image {i} {seconds:.0f}s", flush=True)
+            print(f"{cfg['prompt']} {start + len(idx)}/{len(todo)} images {idx[0]}-{idx[-1]} "
+                  f"{seconds:.0f}s each", flush=True)
     return out_dir
 
 
