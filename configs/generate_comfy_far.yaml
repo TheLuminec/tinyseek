@@ -1,0 +1,29 @@
+# Same generator and scenes as generate_comfy.yaml, with the object small and far away.
+#
+# Why: on the camera's 160-degree lens objects are small. The 24 hand-reviewed backpack boxes
+# from camera sessions outside the held-out pair cover a median 1.9 % of the frame (10th-90th
+# percentile 1.0-3.3 %), while set qwen21_turbo_v2 has a median of 7.1 % (its smallest framing
+# phrase gave 3.9 %). Enlarging objects further (camsim's barrel distortion, median 11.3 %)
+# cut held-out AP@0.5 from 0.142 to 0.012, so this set moves the other way, in the prompt
+# instead of by warping images afterwards.
+base: generate_comfy.yaml
+synth_set: qwen21_turbo_far_v1
+
+template: >-
+  An ordinary, unremarkable snapshot of {location}. The picture was taken by a small camera
+  {viewpoint}, not aimed at anything in particular. It is a very wide-angle view that takes in
+  the whole room, from the floor in front of the camera to the far wall. {subject} {placement}.
+  It is {framing}. The place is lived-in and a little messy, with {clutter}. {lighting}. The
+  whole scene is in the same slightly soft focus with no background blur, neutral white
+  balance, natural colours. Casual and unstaged, not a product photo or a stock photo. No
+  people, no text, no watermark.
+
+fields:
+  framing:
+    - far away at the back of the room, taking up only a very small part of the picture
+    - on the far side of the room, tiny in the frame
+    - in the distance near the far wall, much smaller than the furniture around it
+    - small and far off to the left side, across the room from the camera
+    - small and far off to the right side, across the room from the camera
+    - in the middle distance but small, easy to overlook, not the focus of the picture
+    - far away and partly hidden behind furniture
