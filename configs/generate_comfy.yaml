@@ -26,12 +26,12 @@ workflow_inputs:
   width: [latent, width]
   height: [latent, height]
 output_node: image
-# Sampling time scales with the frame: ~62 s per image at 1184x896 (the size the model was run
-# at interactively) and ~33 s at 896x672 on the GTX 1080 Ti. Reloading the models is not the
+# Sampling time scales with the frame on the GTX 1080 Ti: ~62 s per image at 1184x896 (the size
+# the model was run at interactively), ~33 s at 896x672, ~26 s at 768x576. Reloading the models is not the
 # cost: one job of 8 prompts took 61.9 s per image against 62.0 s as single jobs.
-width: 896
-height: 672
-save_width: 800                    # stored at the camera's frame size (800x600); null keeps the full size
+width: 768
+height: 576
+save_width: 800                    # larger frames are stored 800 px wide (the camera is 800x600); null keeps them
 images_per_job: 1
 timeout_s: 900
 
