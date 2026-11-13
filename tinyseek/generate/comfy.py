@@ -129,6 +129,23 @@ class ComfyClient:
         query = urllib.parse.urlencode({k: ref.get(k, "") for k in ("filename", "subfolder", "type")})
         return Image.open(io.BytesIO(self._get("/view?" + query))).convert("RGB")
 
+    def queued(self) -> int:
+        """Jobs running or waiting on the server, from any client."""
+        queue = json.loads(self._get("/queue"))
+        return len(queue.get("queue_running", [])) + len(queue.get("queue_pending", []))
+
+    def wait_idle(self, poll_s: float = 60, settle: int = 2) -> None:
+        """Block until the server's queue has been empty for ``settle`` polls in a row, so a
+        GPU job in this process does not start beside someone else's server job."""
+        empty = 0
+        while empty < settle:
+            jobs = self.queued()
+            empty = 0 if jobs else empty + 1
+            if empty < settle:
+                print(f"image server: {jobs} job(s) queued, waiting" if jobs else "image server: idle, confirming",
+                      flush=True)
+                time.sleep(poll_s)
+
     def generate(self, graph: dict, nodes: list[str]) -> list[Image.Image]:
         entry = self.wait(self.submit(graph))
         return [self.image(entry, node) for node in nodes]
@@ -177,12 +194,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="configs/generate_comfy.yaml")
     parser.add_argument("--print-prompts", type=int, metavar="N", help="print the first N prompts and exit")
+    parser.add_argument("--wait-idle", action="store_true",
+                        help="wait until the server has no running or pending jobs, then exit")
     parser.add_argument("overrides", nargs="*", help="e.g. prompt=backpack num_images=100")
     args = parser.parse_args()
     cfg = load_config(args.config, args.overrides)
     if args.print_prompts:
         for i in range(args.print_prompts):
             print(f"[{i}] {scene_prompt(cfg, i)[0]}\n")
+        return
+    if args.wait_idle:
+        ComfyClient(os.environ.get("TINYSEEK_COMFY_URL", cfg["server"])).wait_idle()
         return
     print(generate(cfg))
 

@@ -9,8 +9,9 @@
 #
 # Generation and training resume where they stopped; labeling and camera simulation rerun
 # (minutes). EXTRA adds training overrides, e.g. EXTRA="train.epochs=2" SEEDS="0" for a smoke
-# test. Needs a ComfyUI server
-# (configs/generate_comfy.yaml) for the generation step.
+# test. Needs the ComfyUI server of configs/generate_comfy.yaml. The server holds ~10 GB of
+# an 11 GB GPU while it works, so the steps that use the GPU in their own process (labeling,
+# training) first wait until its queue is empty.
 set -euo pipefail
 
 SET="${1:-qwen21_turbo_v2}"
@@ -24,6 +25,9 @@ avm run "tinyseek generate backpack ${SET}" --gpu --exclusive --vram 10G --wait 
     "$PY" -u -m tinyseek.generate.comfy --config configs/generate_comfy.yaml \
     prompt=backpack "synth_set=${SET}" "num_images=${N}"
 
+server_idle() { "$PY" -u -m tinyseek.generate.comfy --config configs/generate_comfy.yaml --wait-idle; }
+
+server_idle
 avm run "tinyseek label backpack ${SET}" --gpu --exclusive --vram 5G --wait -- \
     "$PY" -m tinyseek.label.teacher --teacher owlv2 --prompt backpack \
     --images "data/synthetic/backpack/${SET}" --out "${LABELS}_raw.json"
@@ -34,6 +38,7 @@ avm run "tinyseek camsim backpack ${SET}" -- \
     --out-labels "data/labels/owlv2/synth_${SET}_camsim_backpack_t0.3.json"
 
 for variant in "" "_camsim"; do
+    server_idle
     "$PY" -m tinyseek.train.sweep --conditions heldout_013_014 --prompts backpack --seeds $SEEDS -- \
         "condition=heldout_${SET}${variant}" "synth_set=${SET}${variant}" 'label_variant=""' $EXTRA
 done

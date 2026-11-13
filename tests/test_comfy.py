@@ -10,6 +10,7 @@ from PIL import Image
 
 from tinyseek.config import load_config
 from tinyseek.generate.comfy import (
+    ComfyClient,
     batch_workflow,
     generate,
     patch_workflow,
@@ -83,6 +84,7 @@ def test_batch_workflow_shares_loaders_and_repeats_per_image_nodes():
 
 class FakeComfy(BaseHTTPRequestHandler):
     graphs: ClassVar[list[dict]] = []
+    queue_polls: ClassVar[list[dict]] = []   # answers to /queue, in order; then an empty queue
 
     def _send(self, body: bytes, kind: str = "application/json") -> None:
         self.send_response(200)
@@ -104,6 +106,9 @@ class FakeComfy(BaseHTTPRequestHandler):
                        for node in graph if node.startswith("image#")}
             entry = {"status": {"status_str": "success", "completed": True}, "outputs": outputs}
             self._send(json.dumps({pid: entry}).encode())
+        elif self.path == "/queue":
+            empty = {"queue_running": [], "queue_pending": []}
+            self._send(json.dumps(FakeComfy.queue_polls.pop(0) if FakeComfy.queue_polls else empty).encode())
         else:
             buf = io.BytesIO()
             Image.new("RGB", (1184, 896), (90, 80, 70)).save(buf, "PNG")
@@ -141,3 +146,22 @@ def test_generate_stores_a_resumable_set(tmp_path, per_job, jobs):
         assert len(FakeComfy.graphs) == len(jobs) + 1
     finally:
         server.shutdown()
+
+
+def test_wait_idle_returns_only_after_the_queue_stays_empty(capsys):
+    busy = {"queue_running": [["job"]], "queue_pending": [["a"], ["b"]]}
+    empty = {"queue_running": [], "queue_pending": []}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = ComfyClient(f"http://127.0.0.1:{server.server_port}")
+        FakeComfy.queue_polls = [busy]
+        assert client.queued() == 3
+        FakeComfy.queue_polls = [busy, empty, busy]   # a job arriving after one empty poll resets the count
+        client.wait_idle(poll_s=0.01)
+        assert FakeComfy.queue_polls == []
+        out = capsys.readouterr().out
+        assert out.count("3 job(s) queued, waiting") == 2 and out.count("idle, confirming") == 2
+    finally:
+        server.shutdown()
+        FakeComfy.queue_polls = []
