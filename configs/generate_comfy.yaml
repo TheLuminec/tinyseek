@@ -1,0 +1,122 @@
+# Synthetic images from a ComfyUI server (tinyseek.generate.comfy).
+# Output: data/synthetic/<prompt>/<synth_set>/{000000.jpg, ..., metadata.jsonl, config.yaml, workflow.json}
+#
+# The model draws ordinary, unstaged scenes with no camera effects; the ESP32 camera's look
+# (distortion, tone, noise) is added afterwards by tinyseek.generate.camsim, which also moves
+# the teacher's boxes.
+seed: 0
+prompt: backpack
+data_root: data
+synth_set: qwen21_turbo_v1         # bump the suffix whenever the workflow or the text below changes
+num_images: 1000
+
+server: http://127.0.0.1:8188      # or set TINYSEEK_COMFY_URL
+workflow: configs/comfy/qwen_image_2.1_turbo.json   # API-format graph: 8 steps, cfg 1, euler
+# Where each per-image value goes in the workflow: [node id, input name].
+workflow_inputs:
+  text: [text, prompt]
+  seed: [noise, noise_seed]
+  width: [latent, width]
+  height: [latent, height]
+output_node: image
+width: 1184                        # ~1 MP at 4:3, the size the model was run at interactively
+height: 896
+save_width: 800                    # stored at the camera's frame width; null keeps the full size
+timeout_s: 900
+
+# One paragraph per image; every {field} is drawn from the lists below with the image's seed.
+template: >-
+  An ordinary, unremarkable snapshot of {location}, taken by a cheap fixed webcam left on a
+  shelf or table at about desk height, tilted slightly down and not aimed at anything in
+  particular. {subject} {placement}. It is {framing}. Around it is everyday clutter:
+  {clutter}. {lighting}. Plain wide-angle view with the whole scene in the same slightly soft
+  focus and no background blur, neutral white balance, dull natural colours. Casual and
+  unstaged, not a product photo or a stock photo. No people, no text, no watermark.
+
+fields:
+  location:
+    - a student bedroom
+    - a small home office
+    - a living room
+    - a kitchen with a dining table
+    - a hallway by the front door
+    - a university classroom
+    - a library study area
+    - an open-plan office
+    - a garage workshop
+    - a dorm room
+    - a break room with a few tables
+    - a basement storage room
+  framing:
+    - small in the picture and well off to the left side
+    - small in the picture and well off to the right side
+    - medium-sized and off-centre, in the lower half of the picture
+    - far away at the back of the room, taking up only a small part of the picture
+    - close to the camera and partly cut off by the left edge of the frame
+    - close to the camera and partly cut off by the bottom edge of the frame
+    - partly hidden behind a chair leg and other objects
+    - medium-sized and near the right edge of the picture
+    - roughly in the middle distance, not the focus of the picture
+  clutter:
+    - cables, papers, a jacket over a chair and a couple of cardboard boxes
+    - shoes, a laundry basket, books and a charger on the floor
+    - a monitor, a keyboard, mugs and stacks of paper
+    - chairs pushed in at odd angles, a bin and a whiteboard
+    - shelves of boxes, tools and plastic tubs
+    - folded clothes, a fan, a lamp and an open drawer
+    - grocery bags, a coat rack and an umbrella
+  lighting:
+    - Lit by ordinary ceiling lights at night
+    - Daylight comes from a window on one side, and the window itself is overexposed
+    - Dim evening light from a single lamp
+    - Flat fluorescent office lighting
+    - Overcast daylight, a little dim
+    - Mixed daylight and ceiling light, uneven across the room
+
+# Per-object fields, merged over `fields` for prompt=<key>.
+objects:
+  backpack:
+    subject:
+      - A black nylon backpack
+      - A grey school backpack
+      - A navy blue backpack with a front pocket
+      - A red hiking backpack
+      - An olive green canvas backpack
+      - A tan rucksack with buckled straps
+      - A faded blue daypack
+      - A black laptop backpack with mesh side pockets
+      - A bright yellow child's backpack
+      - A dark green backpack with a water bottle in its side pocket
+      - A purple backpack
+      - A large camping backpack
+    placement:
+      - is lying on its side on the floor
+      - is leaning against the wall on the floor
+      - is sitting on the seat of a chair
+      - is hanging from the back of a chair
+      - is on a table among other things
+      - is on the floor next to a table leg
+      - is hanging from a hook on the wall
+      - is lying half open on the floor with things spilling out
+      - is on a low shelf
+      - is slumped in a corner of the room
+  cup:
+    subject:
+      - A white ceramic mug
+      - A blue coffee mug
+      - A clear drinking glass
+      - A paper takeaway coffee cup with a lid
+      - A red plastic cup
+      - A stainless steel travel mug
+      - A black mug
+      - A striped mug
+      - A small espresso cup on a saucer
+      - A frosted plastic tumbler
+    placement:
+      - is on a table
+      - is on the edge of a desk next to a keyboard
+      - is on a shelf
+      - is on a windowsill
+      - is on a counter
+      - is on the floor next to a chair
+      - is on a stack of books
