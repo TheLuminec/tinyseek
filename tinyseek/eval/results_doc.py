@@ -329,7 +329,10 @@ def build(args: argparse.Namespace) -> dict:
             "rows": [{"label": label, "value": source[c]["ap50"]["mean"], "ci": seed_range(source[c]["ap50"])}
                      for c, label in source_rows]})
     for bar_id, title, spec in HELDOUT_FIGURES:
-        rows = [{"label": label, "value": held[c]["ap50"]["mean"], "ci": seed_range(held[c]["ap50"])}
+        # Mean recomputed from the seeds at 5 decimals: the summary rounds to 4, and e.g. 0.0115 then
+        # displays as 0.011 at 3 decimals although the seed mean is 0.01153.
+        rows = [{"label": label, "value": round(float(np.mean(held[c]["ap50"]["values"])), 5),
+                 "ci": seed_range(held[c]["ap50"])}
                 for c, label in spec if c in held]
         if rows:
             top = max(r["ci"][1] for r in rows)
@@ -337,7 +340,7 @@ def build(args: argparse.Namespace) -> dict:
                          "ci_label": "seed min-max", "domain": [0, round(min(1.0, top * 1.15), 2)], "rows": rows})
 
     def ap(run: str) -> str:
-        return f"{held[run]['ap50']['mean']:.3f}" if run in held else "n/a"
+        return f"{np.mean(held[run]['ap50']['values']):.3f}" if run in held else "n/a"
 
     dotbars = [{
         "id": "clip_sim_by_setting", "title": "CLIP similarity of generated images to real ESP32 photos",
