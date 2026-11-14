@@ -133,6 +133,41 @@ SOURCE_VARIANTS = (  # image-source sweep run names -> chart labels
     ("synth_only_plain1k_sty075", "LoRA img2img 0.75"),
     ("synth_only_plain1k_sty075_camsim", "LoRA img2img 0.75 + camera sim"),
 )
+# Held-out camera sessions 013/014 (backpack; no generator or LoRA here saw them):
+# (bar id, title, ((run name in the held-out summary, chart label), ...)).
+NEAR, FAR = "heldout_qwen21_turbo_v2", "heldout_qwen21_turbo_far_v1"
+HELDOUT_FIGURES = (
+    ("heldout_backpack_training_set", "Backpack AP@0.5 on held-out camera photos, by training set (128 px)", (
+        ("heldout_real_only", "COCO only (6,910 real)"),
+        (NEAR, "Qwen near objects"),
+        (f"{NEAR}_only_tone", "Qwen near, tone-matched"),
+        (f"{NEAR}_only_tone_plus_real", "Qwen near tone + COCO"),
+        (FAR, "Qwen far objects"),
+        (f"{FAR}_only_tone", "Qwen far, tone-matched"),
+        (f"{FAR}_only_tone_plus_real", "Qwen far tone + COCO"),
+        (f"{NEAR}_only_tone_and_far", "Qwen near + far tone"),
+        (f"{NEAR}_only_tone_and_far_plus_real", "Qwen near + far tone + COCO"))),
+    ("heldout_camsim_ablation", "Camera-simulation parts on the same 1,000 Qwen images (held-out photos)", (
+        (NEAR, "none (as generated)"),
+        (f"{NEAR}_only_tone", "tone only"),
+        (f"{NEAR}_only_vignette", "vignette only"),
+        (f"{NEAR}_only_noise", "noise only"),
+        (f"{NEAR}_only_distort", "barrel distortion only"),
+        (f"{NEAR}_tone_vignette", "tone + vignette"),
+        (f"{NEAR}_no_distort", "tone + vignette + noise"),
+        (f"{NEAR}_camsim", "all four"))),
+    ("heldout_data_efficiency", "Backpack AP@0.5 by number of synthetic images (Qwen far, tone-matched)", (
+        (f"{FAR}_only_tone_n125", "125 images"),
+        (f"{FAR}_only_tone_n250", "250 images"),
+        (f"{FAR}_only_tone_n500", "500 images"),
+        (f"{FAR}_only_tone", "1,000 images"))),
+    ("heldout_input_size", "Backpack AP@0.5 by student input size (Qwen far, tone-matched)", (
+        (f"{FAR}_only_tone", "128 px (31 M MACs)"),
+        (f"{FAR}_only_tone_px160", "160 px (49 M MACs)"),
+        (f"{FAR}_only_tone_px192", "192 px (71 M MACs)"),
+        (f"{FAR}_only_tone_plus_real_px192", "192 px + COCO"),
+        (f"{FAR}_only_tone_px256", "256 px (125 M, over budget)"))),
+)
 
 
 def seed_range(cell: dict) -> list[float]:
@@ -224,6 +259,26 @@ def build(args: argparse.Namespace) -> dict:
          "comparator": {"label": "large cups only", "value": round(student["ap50_large"], 4)},
          "compliance": "configs/real_only.yaml prompt=cup seed=0, 128 px input, final epoch"},
     ]
+    held = {}
+    if Path(args.heldout_summary).exists():
+        held = json.loads(Path(args.heldout_summary).read_text()).get("backpack", {}).get("esp32_heldout", {})
+    for row_id, run, result, cmp_label, cmp_run, compliance in (
+        ("student_heldout_backpack_synth_ap50", f"{FAR}_only_tone", "AP@0.5 (backpack), synthetic only, 128 px",
+         "COCO only", "heldout_real_only",
+         ("1,000 Qwen Image 2.1 Turbo images (far objects, tone-matched), configs/heldout_013_014.yaml, "
+          "seeds 0-2; no real photos in generation or training")),
+        ("student_heldout_backpack_px192_ap50", f"{FAR}_only_tone_px192", "AP@0.5 (backpack), synthetic only, 192 px",
+         "128 px input", f"{FAR}_only_tone",
+         ("same images and config with model.input_size=192 (71 M MACs, fits the budget check; "
+          "on-device latency not measured)")),
+    ):
+        if run in held and cmp_run in held:
+            headline.append({
+                "id": row_id, "group": "Student detector on held-out ESP32 photos", "result": result,
+                "metric": "mean over 3 seeds, 227 hand-reviewed photos of sessions 013/014", "n": 227,
+                "value": held[run]["ap50"]["mean"], "ci": seed_range(held[run]["ap50"]), "ci_label": "seed min-max",
+                "chance": None, "comparator": {"label": cmp_label, "value": held[cmp_run]["ap50"]["mean"]},
+                "compliance": compliance})
     bars = [
         {"id": "teacher_found_by_setting", "title": "Teacher found-rate in generated images",
          "unit": "rate", "domain": [0, 1], "better": "higher", "decimals": 2,
@@ -273,6 +328,17 @@ def build(args: argparse.Namespace) -> dict:
             "domain": [0, round(max(max(source[c]["ap50"]["values"]) for c, _ in source_rows) * 1.15 + 0.005, 2)],
             "rows": [{"label": label, "value": source[c]["ap50"]["mean"], "ci": seed_range(source[c]["ap50"])}
                      for c, label in source_rows]})
+    for bar_id, title, spec in HELDOUT_FIGURES:
+        rows = [{"label": label, "value": held[c]["ap50"]["mean"], "ci": seed_range(held[c]["ap50"])}
+                for c, label in spec if c in held]
+        if rows:
+            top = max(r["ci"][1] for r in rows)
+            bars.append({"id": bar_id, "title": title, "unit": "AP@0.5", "better": "higher", "decimals": 3,
+                         "ci_label": "seed min-max", "domain": [0, round(min(1.0, top * 1.15), 2)], "rows": rows})
+
+    def ap(run: str) -> str:
+        return f"{held[run]['ap50']['mean']:.3f}" if run in held else "n/a"
+
     dotbars = [{
         "id": "clip_sim_by_setting", "title": "CLIP similarity of generated images to real ESP32 photos",
         "unit": "cosine", "baseline": 0.5, "domain": [0.4, 1], "decimals": 3, "points_label": "generated images",
@@ -309,16 +375,47 @@ def build(args: argparse.Namespace) -> dict:
                        "img2img stylizing all ~0: the gain is learned content, not the camera look"},
         {"title": "Domain LoRA v3 (851 photos incl. a second building)", "status": "closed",
          "status_text": "not adopted", "key_result": "barely closer to the camera, draws fewer objects (empty garages)"},
-        {"title": "Held-out camera test (photos the LoRA never saw)", "status": "registered",
-         "status_text": "next", "key_result": "separates real gains from leaked content"},
+        {"title": "Held-out camera test (photos the LoRA never saw)", "status": "closed",
+         "status_text": "2026-11-11, second machine",
+         "key_result": "backpack sessions 013/014: LoRA that saw them 0.236, LoRA trained without them 0.043, "
+                       "plain SD 0.006; most of the LoRA gain was leaked content"},
+        {"title": "Larger generator: Qwen Image 2.1 Turbo, no LoRA (backpack, 1,000 images)", "status": "closed",
+         "status_text": "2026-11-13",
+         "key_result": f"held-out AP@0.5 {ap(NEAR)} from scene-description prompts alone; "
+                       f"COCO only {ap('heldout_real_only')}"},
+        {"title": "Camera-simulation ablation (same 1,000 Qwen images)", "status": "closed",
+         "status_text": "24 runs, 2026-11-13",
+         "key_result": f"tone matching helps ({ap(NEAR + '_only_tone')}); barrel distortion hurts "
+                       f"({ap(NEAR + '_only_distort')}); vignette and noise within seed spread"},
+        {"title": "Far-object prompts (objects small, as on the 160-degree lens)", "status": "closed",
+         "status_text": "1,000 images, 2026-11-14",
+         "key_result": f"held-out AP@0.5 {ap(FAR)} as generated, {ap(FAR + '_only_tone')} tone-matched, "
+                       f"{ap(FAR + '_only_tone_plus_real')} with COCO added"},
+        {"title": "Data efficiency and input size (far set, tone-matched)", "status": "closed",
+         "status_text": "21 runs, 2026-11-14",
+         "key_result": f"125 / 250 / 500 / 1,000 images: {ap(FAR + '_only_tone_n125')} / {ap(FAR + '_only_tone_n250')} / "
+                       f"{ap(FAR + '_only_tone_n500')} / {ap(FAR + '_only_tone')}; input 160 / 192 / 256 px: "
+                       f"{ap(FAR + '_only_tone_px160')} / {ap(FAR + '_only_tone_px192')} / {ap(FAR + '_only_tone_px256')}"},
+        {"title": "On-device latency at 128 and 192 px", "status": "registered", "status_text": "next",
+         "key_result": "decides whether the 192 px input can be adopted"},
         {"title": "Domain LoRA v3 (more photos of people)", "status": "registered",
          "status_text": "waiting for photos", "key_result": "v2 rarely draws people; person still uses v1"},
     ]
     notes = [
         ("Caveat: the domain LoRA that styled the synthetic images was trained on the same ESP32 photos used "
          "as the camera test set (including the backpack and cup sessions). The detector never saw them, but "
-         "the image generator did, so synthetic gains on camera photos are likely overstated until a held-out "
-         "set (photos from another building) is measured."),
+         "the image generator did, so the LoRA rows of the training-condition and image-source figures are "
+         "overstated. The held-out figures below are free of this: they are scored on sessions 013/014, and "
+         "the Qwen images come from text prompts only (no LoRA, no camera photos)."),
+        ("Held-out figures: backpack, 227 hand-reviewed photos of sessions 013/014, synthetic sets of 1,000 "
+         "images with raw teacher boxes at 0.3, bars = mean over seeds 0-2, whiskers = seed min-max. For "
+         "comparison, SD 1.5 sets scored on the same photos on a second machine (2026-11-11, not in these "
+         "figures): LoRA that saw the photos 0.236, LoRA trained without them 0.043, plain SD 0.006."),
+        ("Held-out caveats: Qwen was given long scene descriptions and SD 1.5 short templates, so generator "
+         "and prompt detail are not separated; the far-object prompts were sized from 24 backpack boxes in "
+         "other sessions, not from the held-out ones; 160 and 192 px pass the model budget check but "
+         "on-device latency is not measured, and 256 px does not fit; all of these detectors score about "
+         "0.00-0.01 on COCO val2017. Qwen Image 2.1 is under a research, non-commercial licence."),
         ("Image-source sweep: synthetic-only detectors score ~0 on camera photos without the domain LoRA, "
          "even with the camera's distortion, colour and noise simulated; with it, 0.128 (1,000 images, this "
          "figure) to 0.200 (2,000 curated images: the backpack synth_only row of the training-condition "
@@ -352,6 +449,8 @@ def main() -> None:
     parser.add_argument("--session-threshold", type=float, default=0.2)
     parser.add_argument("--student-eval", default="runs/cup/real_only/seed0/eval.json")
     parser.add_argument("--summary", default="runs/summary.json", help="tinyseek.eval.summarize output")
+    parser.add_argument("--heldout-summary", default="runs/summary_heldout_all.json",
+                        help="summarize output of the held-out (sessions 013/014) runs")
     parser.add_argument("--source-summary", default="runs/summary_stylize_sweep.json",
                         help="summarize output of the synthetic image-source sweep")
     parser.add_argument("--verdicts", default="data/review/verdicts/real_esp32cam.json",
