@@ -19,6 +19,36 @@ def test_condition_configs_resolve():
     assert len(synth_real["train"]["sources"]) == 2
 
 
+def test_heldout_configs_resolve():
+    sources = {"heldout_013_014": 1, "heldout_013_014_real_only": 1, "heldout_013_014_synth_real": 2,
+               "heldout_013_014_curve": 1, "heldout_013_014_synth2": 2, "heldout_013_014_synth2_real": 3}
+    for name, n in sources.items():
+        cfg = load_config(f"configs/{name}.yaml", ["prompt=backpack", "synth_set=a", "synth_set_b=b", 'label_variant=""'])
+        assert set(cfg["eval"]["sets"]) == {"coco_val", "esp32_real", "esp32_heldout"}
+        assert len(cfg["train"]["sources"]) == n
+        for src in cfg["train"]["sources"]:
+            assert "{" not in fill(src["ann"], cfg) and "{" not in fill(src["images"], cfg)
+    two = load_config("configs/heldout_013_014_synth2.yaml", ["prompt=backpack", "synth_set=a", "synth_set_b=b", 'label_variant=""'])
+    assert [fill(s["images"], two) for s in two["train"]["sources"]] == ["synthetic/backpack/a", "synthetic/backpack/b"]
+
+
+def test_source_limit_can_come_from_a_top_level_key(tmp_path):
+    import json
+
+    from tinyseek.train.train import load_sources
+
+    images = [{"id": i, "file_name": f"{i}.jpg", "width": 64, "height": 48} for i in range(10)]
+    anns = [{"id": i, "image_id": i, "category_id": 27, "bbox": [4, 4, 20, 20], "area": 400, "iscrowd": 0} for i in range(10)]
+    (tmp_path / "labels.json").write_text(json.dumps({"images": images, "annotations": anns,
+                                                      "categories": [{"id": 27, "name": "backpack"}]}))
+    cfg = {"data_root": str(tmp_path), "seed": 0, "synth_images": 4,
+           "train": {"sources": [{"ann": "labels.json", "images": ".", "max_images": "{synth_images}"}]}}
+    assert len(load_sources(cfg, 27)) == 4
+    assert len(load_sources(dict(cfg, synth_images=250), 27)) == 10
+    curve = load_config("configs/heldout_013_014_curve.yaml", ["synth_images=250"])
+    assert curve["train"]["sources"][0]["max_images"] == "{synth_images}" and curve["synth_images"] == 250
+
+
 def test_letterbox_inverse():
     img = Image.new("RGB", (640, 480))
     canvas, lb = letterbox(img, 128)

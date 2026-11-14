@@ -35,6 +35,8 @@ def load_sources(cfg: dict, category_id: int) -> list[Record]:
     for i, src in enumerate(cfg["train"]["sources"]):
         recs = load_coco_records(root / fill(src["ann"], cfg), root / fill(src["images"], cfg), category_id)
         limit = src.get("max_images")
+        if isinstance(limit, str):  # "{synth_images}": the limit comes from a top-level key, so overrides can set it
+            limit = int(fill(limit, cfg))
         if limit is not None and limit < len(recs):
             rng = np.random.default_rng([cfg["seed"], i])
             recs = [recs[j] for j in sorted(rng.choice(len(recs), limit, replace=False))]

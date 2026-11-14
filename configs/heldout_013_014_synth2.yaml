@@ -1,0 +1,9 @@
+# Two synthetic sets together (e.g. near and far object framings), synthetic only, scored on
+# the held-out camera sessions. Pass synth_set=<a> synth_set_b=<b> label_variant="".
+base: heldout_013_014.yaml
+condition: heldout_synth2
+synth_set_b: qwen21_turbo_far_v1_only_tone
+train:
+  sources:
+    - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set}"}
+    - {ann: "labels/{teacher}/synth_{synth_set_b}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set_b}"}

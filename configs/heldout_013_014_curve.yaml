@@ -1,0 +1,9 @@
+# Data-efficiency curve on the held-out camera sessions: synthetic-only training on a seeded
+# subset of synth_images images from one set. Pass synth_set=<set> synth_images=<n>
+# label_variant="" and a condition name that records n.
+base: heldout_013_014.yaml
+condition: heldout_curve
+synth_images: 1000
+train:
+  sources:
+    - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set}", max_images: "{synth_images}"}
