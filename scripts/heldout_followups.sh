@@ -5,7 +5,7 @@
 #   2. NEAR + FAR sets together, synthetic only
 #   3. NEAR + FAR + real COCO images
 #   4. data-efficiency curve: 125 / 250 / 500 images of the BEST single set
-#   5. student input size 160 / 192 / 256 px on the BEST single set (128 px is the default;
+#   5. student input size 160 / 192 / 256 px on the BEST single set (128 px was the default then;
 #      tinyseek.train.budget says 160 and 192 fit the ESP32-S3 budget and 256 does not)
 #
 #   scripts/heldout_followups.sh [near_set] [far_set] [best_set]

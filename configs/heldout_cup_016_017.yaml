@@ -1,0 +1,11 @@
+# Cup, synthetic-only detector, also scored on the dedicated cup sessions 016/017 (111
+# hand-reviewed photos, 136 cup boxes). Pass prompt=cup synth_set=<set> label_variant="".
+# Sets from a generator that saw no camera photos (Qwen, no LoRA) can also be judged on the
+# whole reviewed set (esp32_real, 416 cup boxes); the two-session set is reported separately
+# because prompts may be sized from the other sessions.
+base: synth_only.yaml
+prompt: cup
+condition: heldout_cup
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s016_017.json, images: esp32cam/raw}

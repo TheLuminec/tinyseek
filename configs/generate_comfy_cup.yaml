@@ -1,0 +1,42 @@
+# Cups as the camera sees them: the far-object template of generate_comfy_far.yaml with cup
+# subjects and placements.
+#
+# Sizing: hand-reviewed cup boxes on the camera cover a median of roughly 0.2-1 % of the frame
+# per session. A cup is about a quarter of a backpack's width, so the far framing phrases (2.8 %
+# median for backpacks) should land near 0.2-0.3 % and the nearer ones near 0.5-1 %; both lists
+# are used. The close-up, cut-off framings of generate_comfy.yaml are left out.
+base: generate_comfy_far.yaml
+prompt: cup
+synth_set: qwen21_turbo_cup_v1
+
+fields:
+  framing:
+    - far away at the back of the room, taking up only a very small part of the picture
+    - on the far side of the room, tiny in the frame
+    - in the distance near the far wall, much smaller than the furniture around it
+    - small and far off to the left side, across the room from the camera
+    - small and far off to the right side, across the room from the camera
+    - in the middle distance but small, easy to overlook, not the focus of the picture
+    - far away and partly hidden behind other things
+    - small in the picture and well off to the left side
+    - small in the picture and well off to the right side
+    - roughly in the middle distance, not the focus of the picture
+    - partly hidden behind other objects
+    - a few steps from the camera, off-centre in the lower half of the picture
+
+objects:
+  cup:
+    placement:
+      - is on a table
+      - is on the edge of a desk next to a keyboard
+      - is on a shelf
+      - is on a windowsill
+      - is on a counter
+      - is on the floor next to a chair
+      - is on a stack of books
+      - is on a low coffee table
+      - is on a bedside table
+      - is on a workbench
+      - is next to a sink
+      - is on top of a cabinet
+      - is on the seat of a chair

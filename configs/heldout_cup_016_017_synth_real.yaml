@@ -1,0 +1,8 @@
+# Cup, synthetic plus real COCO images, also scored on the cup sessions 016/017.
+# Pass synth_set=<set> label_variant="".
+base: synth_real.yaml
+prompt: cup
+condition: heldout_synth_real
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s016_017.json, images: esp32cam/raw}

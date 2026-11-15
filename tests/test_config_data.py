@@ -11,7 +11,7 @@ def test_condition_configs_resolve():
     for name in ("real_only", "teacher_real", "synth_only", "synth_real"):
         cfg = load_config(f"configs/{name}.yaml", ["prompt=backpack", "seed=3"])
         assert cfg["condition"] == name and cfg["seed"] == 3
-        assert cfg["model"]["input_size"] == 128  # inherited from base
+        assert cfg["model"]["input_size"] == 192  # inherited from base
         for src in cfg["train"]["sources"]:
             path = fill(src["ann"], cfg)
             assert "{" not in path and "backpack" in path

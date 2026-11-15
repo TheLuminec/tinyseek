@@ -119,10 +119,11 @@ for the syntax).
 
 CenterNet-style single-stride detector: a MobileNetV2-0.5 backbone (ImageNet-pretrained;
 0.5 is the narrowest pretrained width in timm) with light top-down fusion of the stride
-8/16/32 features into one 16x16 head at 128x128 input. It outputs a per-class heatmap plus box
+8/16/32 features into one 24x24 head at 192x192 input. It outputs a per-class heatmap plus box
 size and center offset, so on-device post-processing is a 3x3 local-maximum test and a few
-`expf` calls; no anchors or NMS. Default config: 0.50M parameters (~475 KB int8), ~0.6 MB
-peak activations, 31M MACs (`tinyseek.train.budget`).
+`expf` calls; no anchors or NMS. Default config: 0.50M parameters (~475 KB int8), ~1.3 MB
+peak activations, 71M MACs (`tinyseek.train.budget`). The input was 128x128 (~0.6 MB, 31M MACs)
+until 2026-11-15; `model.input_size=128` restores it.
 
 ## Data and secrets
 

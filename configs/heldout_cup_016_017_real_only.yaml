@@ -1,0 +1,8 @@
+# Cup, real COCO images only, also scored on the cup sessions 016/017: the real-data reference
+# for configs/heldout_cup_016_017.yaml.
+base: real_only.yaml
+prompt: cup
+condition: heldout_real_only
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s016_017.json, images: esp32cam/raw}
