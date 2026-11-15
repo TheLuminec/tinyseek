@@ -66,7 +66,7 @@ def exponent_violations(graph) -> list[str]:
     return bad
 
 
-def export(run: Path, calib_images: int, eval_images: int, target: str) -> dict:
+def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set: str | None = None) -> dict:
     from esp_ppq import QuantizationSettingFactory
     from esp_ppq.api import espdl_quantize_torch, get_target_platform
     from esp_ppq.executor import TorchExecutor
@@ -130,7 +130,8 @@ def export(run: Path, calib_images: int, eval_images: int, target: str) -> dict:
     result = {"espdl_bytes": out_file.stat().st_size, "int16_layers": int16_ops}
 
     if eval_images:
-        name, spec = next(iter(cfg["eval"]["sets"].items()))
+        name = eval_set or next(iter(cfg["eval"]["sets"]))
+        spec = cfg["eval"]["sets"][name]
         root = Path(cfg["data_root"])
         ann = str(root / fill(spec["ann"], cfg))
         recs = load_coco_records(ann, root / fill(spec["images"], cfg), category_id)[:eval_images]
@@ -154,8 +155,9 @@ def main() -> None:
     parser.add_argument("--calib-images", type=int, default=512)
     parser.add_argument("--eval-images", type=int, default=1000, help="0 to skip the int8 accuracy check")
     parser.add_argument("--target", default="esp32s3")
+    parser.add_argument("--eval-set", help="eval set for the int8 accuracy check (default: the run's first one)")
     args = parser.parse_args()
-    print(json.dumps(export(Path(args.run), args.calib_images, args.eval_images, args.target), indent=2))
+    print(json.dumps(export(Path(args.run), args.calib_images, args.eval_images, args.target, args.eval_set), indent=2))
 
 
 if __name__ == "__main__":
