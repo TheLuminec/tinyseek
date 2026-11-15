@@ -1,0 +1,7 @@
+# Exact pins so a rebuild months later benchmarks the same runtime. Checked against the
+# component registry on 2026-11-15 (see README.md, "Versions").
+dependencies:
+  idf: ">=5.5.6,<5.6"
+  espressif/esp-dl: "==3.3.15"
+  espressif/esp32-camera: "==2.1.9"
+  espressif/esp_new_jpeg: "==1.0.2"

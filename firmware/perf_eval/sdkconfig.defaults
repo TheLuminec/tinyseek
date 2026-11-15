@@ -1,0 +1,29 @@
+# Freenove ESP32-S3 WROOM CAM (N16R8): 16 MB QIO flash, 8 MB octal PSRAM, 240 MHz.
+# Cache and PSRAM settings follow ESP-DL v3.3.15's esp32s3 example defaults
+# (examples/tutorial/how_to_load_test_profile_model/*/sdkconfig.defaults.esp32s3), except
+# the flash size. Changing any of these changes the latency numbers: record it.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
+
+# Long file names on the card (px192.espdl, c000_rgb_out.bin).
+CONFIG_FATFS_LFN_HEAP=y
+
+# The benchmark runs in app_main: room for std::vector work, and a watchdog that does not
+# fire during a model load from the card.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
