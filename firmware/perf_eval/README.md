@@ -123,7 +123,7 @@ sync
 | `parity` | 1 | run the parity cases |
 | `camera` | 0 | 1: also benchmark live capture (needs the camera module connected) |
 | `camera_frames` | 50 | timed frames in the camera loop |
-| `internal_kb` | 0 | ESP-DL `max_internal_size`. 0 keeps every activation in PSRAM; for example 200 lets ESP-DL put up to 200 KB of the activation arena in internal RAM (clamped to the largest free internal block). Benchmark both. |
+| `internal_kb` | 0 | ESP-DL `max_internal_size`. 0 keeps every activation in PSRAM; for example 100 asks ESP-DL to put the first 100 KB of the activation arena in internal RAM. ESP-DL allocates that as one block and does not clamp it: if no free internal block is that large the model fails to load ("Failed to alloc ... internal RAM"). On the Freenove N16R8 under arduino-esp32 3.3.12 the largest free block at that point was 128 KB, so 200 failed (2026-11-16); use 100. Benchmark both. |
 | `profile` | 0 | 1: also print ESP-DL's per-layer latency and memory table (`Model::profile()`) on serial |
 
 ## 2. Build and flash
@@ -172,7 +172,7 @@ What one boot does:
    4. If `camera=1`, run the camera loop.
    5. Unload it.
 
-Re-running with `internal_kb=200` (edit `bench.txt` on the card, then reset) measures
+Re-running with `internal_kb=100` (edit `bench.txt` on the card, then reset) measures
 whether internal RAM for activations matters.
 
 ## 4. Compare and read the results (PC)
