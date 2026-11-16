@@ -63,9 +63,12 @@ def size_of(path: Path) -> tuple[int, int]:
         return im.size
 
 
-def real_index(data_root: Path, teacher: str) -> dict:
+def real_index(data_root: Path, teacher: str, manifest: str = "manifest.json", label_stem: str = "esp32cam",
+               set_name: str = "real/esp32cam") -> dict:
+    """``manifest``, ``label_stem`` and ``set_name`` let a later batch of sessions be reviewed as its own set
+    (its own esp32_prep manifest and ``<label_stem>_<prompt>_raw.json`` teacher files)."""
     cam = data_root / "esp32cam"
-    manifest = json.loads((cam / "manifest.json").read_text())["photos"]
+    photos = json.loads((cam / manifest).read_text())["photos"]
     captions = {}
     for name in ("captions_v2.jsonl", "captions.jsonl"):
         if (cam / name).exists():
@@ -76,9 +79,9 @@ def real_index(data_root: Path, teacher: str) -> dict:
     if (cam / "sessions.csv").exists():
         with (cam / "sessions.csv").open() as f:
             sessions = {r["session"]: r["contents"] for r in csv.DictReader(f)}
-    boxes = load_boxes({lb: data_root / "labels" / teacher / f"esp32cam_{lb}_raw.json" for lb in all_labels()})
+    boxes = load_boxes({lb: data_root / "labels" / teacher / f"{label_stem}_{lb}_raw.json" for lb in all_labels()})
     items = []
-    for e in manifest:
+    for e in photos:
         w, h = size_of(cam / "raw" / e["file"])
         items.append({
             "file": e["file"], "width": w, "height": h,
@@ -87,7 +90,7 @@ def real_index(data_root: Path, teacher: str) -> dict:
                      "sharpness_rel": e["sharpness_rel"], "session_contents": sessions.get(e["session"])},
             "boxes": boxes.get(e["file"], []),
         })
-    return {"set": "real/esp32cam", "kind": "real", "image_root": str((cam / "raw").resolve()), "items": items}
+    return {"set": set_name, "kind": "real", "image_root": str((cam / "raw").resolve()), "items": items}
 
 
 def synthetic_index(data_root: Path, prompt: str, synth_set: str, teacher: str) -> dict:
@@ -119,10 +122,13 @@ def main() -> None:
     parser.add_argument("--teacher", default="owlv2")
     parser.add_argument("--prompt", help="synth: which prompt's set")
     parser.add_argument("--synth-set", help="synth: set name, e.g. sd15_lcm_esp32v2")
+    parser.add_argument("--manifest", default="manifest.json", help="real: esp32_prep manifest under data/esp32cam")
+    parser.add_argument("--label-stem", default="esp32cam", help="real: teacher files are <stem>_<prompt>_raw.json")
+    parser.add_argument("--set-name", default="real/esp32cam", help="real: gallery set name")
     args = parser.parse_args()
 
     if args.kind == "real":
-        index = real_index(args.data_root, args.teacher)
+        index = real_index(args.data_root, args.teacher, args.manifest, args.label_stem, args.set_name)
     else:
         if not (args.prompt and args.synth_set):
             parser.error("synth needs --prompt and --synth-set")
