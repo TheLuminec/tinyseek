@@ -12,9 +12,13 @@ namespace perf {
 bool camera_init(uint32_t warmup_ms);
 void camera_deinit();
 
-// JPEG -> RGB888 (R,G,B byte order) with esp_new_jpeg. `rgb` must hold w*h*3 bytes and be
-// 16-byte aligned (the decoder shifts columns on the S3 otherwise). Fails if the image is
-// not exactly w x h, so a wrong frame size never reaches the preprocessing plan.
+// JPEG -> RGB888 in R,G,B byte order: esp_new_jpeg in the ESP-IDF build, esp32-camera's
+// fmt2rgb888 under Arduino. `rgb` must hold w*h*3 bytes and be 16-byte aligned
+// (esp_new_jpeg shifts columns on the S3 otherwise). Fails unless the header says a
+// baseline w x h image, so a wrong frame never reaches the preprocessing plan.
 bool decode_jpeg(const uint8_t *jpeg, size_t len, uint8_t *rgb, int w, int h);
+
+// Which decoder decode_jpeg uses; recorded in every result row.
+const char *jpeg_decoder_name();
 
 }  // namespace perf

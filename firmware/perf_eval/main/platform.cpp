@@ -9,19 +9,107 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "driver/sdmmc_host.h"
+#include <cstdarg>
+
 #include "esp_heap_caps.h"
-#include "esp_log.h"
+#include "esp_idf_version.h"
+
+#include "sdkconfig.h"
+
+#ifdef ARDUINO
+#include <Arduino.h>
+#include <SD_MMC.h>
+
+#include "arduino_config.h"
+#else
+#include "driver/sdmmc_host.h"
 #include "esp_private/esp_clk.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#endif
 
 #define BOARD_FREENOVE_S3_CAM
 #include "board_pins.h"
 
-static const char *TAG = "perf";
-
 namespace perf {
+
+void logln(const char *fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+#ifdef ARDUINO
+  Serial.println(buf);
+#else
+  printf("%s\n", buf);
+#endif
+}
+
+// The settings that change latency and that the two builds do not share: the ESP-IDF
+// build sets them in sdkconfig.defaults, the Arduino core fixes them in its prebuilt
+// libraries. Read from sdkconfig.h so each result says what it ran with.
+#ifndef CONFIG_ESP32S3_DATA_CACHE_SIZE
+#define CONFIG_ESP32S3_DATA_CACHE_SIZE 0
+#endif
+#ifndef CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE
+#define CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE 0
+#endif
+#ifndef CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE
+#define CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE 0
+#endif
+#ifndef CONFIG_SPIRAM_SPEED
+#define CONFIG_SPIRAM_SPEED 0
+#endif
+#if defined(CONFIG_COMPILER_OPTIMIZATION_PERF)
+#define TINYSEEK_SDK_OPT "perf"
+#elif defined(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+#define TINYSEEK_SDK_OPT "size"
+#elif defined(CONFIG_COMPILER_OPTIMIZATION_DEBUG)
+#define TINYSEEK_SDK_OPT "debug"
+#else
+#define TINYSEEK_SDK_OPT "none"
+#endif
+
+std::string sdk_settings() {
+  char buf[160];
+  snprintf(buf, sizeof(buf), "dcache=%dKB/%dB icache=%dKB spiram=%dMHz sdk_opt=%s",
+           CONFIG_ESP32S3_DATA_CACHE_SIZE / 1024, CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE,
+           CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE / 1024, CONFIG_SPIRAM_SPEED, TINYSEEK_SDK_OPT);
+  return buf;
+}
+
+#ifdef ARDUINO
+
+BuildInfo build_info() {
+  return {"arduino-esp32 " ESP_ARDUINO_VERSION_STR, esp_get_idf_version(), TINYSEEK_ARDUINO_ESPDL,
+          "bundled with core " ESP_ARDUINO_VERSION_STR};
+}
+
+bool mount_sd_card() {
+  // As in firmware/capture/capture.ino: the Arduino SD_MMC library mounts the card as a FAT
+  // VFS at /sdcard, so the plain fopen()/opendir() calls below work unchanged. 20 MHz
+  // (SDMMC_FREQ_DEFAULT) like the ESP-IDF build, so model load times compare; the
+  // library's own default is high speed (40 MHz).
+  SD_MMC.setPins(SD_PIN_CLK, SD_PIN_CMD, SD_PIN_D0);
+  if (!SD_MMC.begin(kMount, true /* 1-bit */, false /* never format */, SDMMC_FREQ_DEFAULT, 5)) {
+    logln("SD mount failed");
+    return false;
+  }
+  if (SD_MMC.cardType() == CARD_NONE) return false;
+  logln("SD card: %llu MB", static_cast<unsigned long long>(SD_MMC.cardSize() >> 20));
+  return true;
+}
+
+int cpu_mhz() { return static_cast<int>(getCpuFrequencyMhz()); }
+
+#else  // ESP-IDF
+
+BuildInfo build_info() {
+  return {"esp-idf", esp_get_idf_version(), TINYSEEK_ESPDL_VERSION, TINYSEEK_CAMERA_VERSION};
+}
+
+int cpu_mhz() { return esp_clk_cpu_freq() / 1000000; }
 
 bool mount_sd_card() {
   // Same wiring as the capture sketch: SD_MMC, 1-bit, pins from board_pins.h. Based on
@@ -40,12 +128,14 @@ bool mount_sd_card() {
   sdmmc_card_t *card = nullptr;
   esp_err_t err = esp_vfs_fat_sdmmc_mount(kMount, &host, &slot, &mount_config, &card);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(err));
+    logln("SD mount failed: %s", esp_err_to_name(err));
     return false;
   }
   sdmmc_card_print_info(stdout, card);
   return true;
 }
+
+#endif  // ARDUINO
 
 void *alloc_psram(size_t bytes) { return heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 void *alloc_internal(size_t bytes) {
@@ -179,7 +269,5 @@ Stats summarize(const std::vector<int64_t> &d) {
   s.max_ms = hi;
   return s;
 }
-
-int cpu_mhz() { return esp_clk_cpu_freq() / 1000000; }
 
 }  // namespace perf

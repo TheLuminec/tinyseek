@@ -33,7 +33,7 @@ def cli(tmp_path_factory) -> Path:
     core = FW / "components" / "tinyseek_core"
     subprocess.run(
         ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", f"-I{core / 'include'}",
-         str(core / "src" / "preprocess.cpp"), str(core / "src" / "decode.cpp"),
+         *sorted(str(p) for p in (core / "src").glob("*.cpp")),
          str(FW / "host_test" / "core_cli.cpp"), "-o", str(out)],
         check=True,
     )
@@ -127,3 +127,33 @@ def test_decode_matches_pc_on_real_model_output(cli, tmp_path):
     ref = decode_output(q, -4, lb)
     assert ref, "expected at least one detection on this photo"
     assert_same_dets(ref, run_decode(cli, q, -4, lb, tmp_path))
+
+
+def run_jpeginfo(cli: Path, path: Path) -> list[int] | None:
+    r = subprocess.run([str(cli), "jpeginfo", str(path)], capture_output=True, text=True, check=False)
+    return None if r.returncode else [int(v) for v in r.stdout.split()]
+
+
+@pytest.mark.parametrize("progressive", [False, True])
+@pytest.mark.parametrize("mode", ["RGB", "L"])
+def test_jpeg_info_reads_frame_header(cli, tmp_path, progressive, mode):
+    path = tmp_path / "x.jpg"
+    exif = Image.Exif()
+    exif[0x010F] = "maker"  # an APP1 segment before the frame header
+    Image.new(mode, (800, 600), 90).save(path, quality=80, progressive=progressive, exif=exif.tobytes())
+    assert run_jpeginfo(cli, path) == [800, 600, 3 if mode == "RGB" else 1, int(progressive)]
+
+
+def test_jpeg_info_rejects_non_jpeg_and_truncated(cli, tmp_path):
+    png = tmp_path / "x.png"
+    Image.new("RGB", (8, 8)).save(png)
+    assert run_jpeginfo(cli, png) is None
+    jpg = tmp_path / "x.jpg"
+    Image.new("RGB", (8, 8)).save(jpg)
+    (tmp_path / "cut.jpg").write_bytes(jpg.read_bytes()[:20])
+    assert run_jpeginfo(cli, tmp_path / "cut.jpg") is None
+
+
+@pytest.mark.skipif(not CAMERA_PHOTO.exists(), reason="ESP32 camera photos not present")
+def test_jpeg_info_on_camera_photo(cli):
+    assert run_jpeginfo(cli, CAMERA_PHOTO) == [*Image.open(CAMERA_PHOTO).size, 3, 0]

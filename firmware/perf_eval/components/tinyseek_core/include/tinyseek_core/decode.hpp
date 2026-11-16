@@ -13,7 +13,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "tinyseek_core/preprocess.hpp"
+// Same-directory include, so the header also works when copied into an Arduino sketch.
+#include "preprocess.hpp"
 
 namespace tinyseek {
 

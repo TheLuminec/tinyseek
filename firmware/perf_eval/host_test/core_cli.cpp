@@ -6,6 +6,8 @@
 //   core_cli decode <int8 NHWC file> <grid> <num_classes> <stride> <exponent>
 //                   <scale> <pad_x> <pad_y> <score_threshold> <max_detections>
 //       prints one "x y w h score cls" line per detection
+//   core_cli jpeginfo <file.jpg>
+//       prints "width height components progressive" (or "invalid", exit 1)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +16,7 @@
 #include <vector>
 
 #include "tinyseek_core/decode.hpp"
+#include "tinyseek_core/jpeg_info.hpp"
 #include "tinyseek_core/preprocess.hpp"
 
 static std::vector<uint8_t> read_file(const char *path) {
@@ -68,9 +71,21 @@ static int run_decode(char **a) {
   return 0;
 }
 
+static int run_jpeginfo(char **a) {
+  std::vector<uint8_t> raw = read_file(a[0]);
+  tinyseek::JpegInfo info;
+  if (!tinyseek::jpeg_info(raw.data(), raw.size(), info)) {
+    std::printf("invalid\n");
+    return 1;
+  }
+  std::printf("%d %d %d %d\n", info.width, info.height, info.components, info.progressive ? 1 : 0);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc == 8 && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
   if (argc == 12 && !std::strcmp(argv[1], "decode")) return run_decode(argv + 2);
+  if (argc == 3 && !std::strcmp(argv[1], "jpeginfo")) return run_jpeginfo(argv + 2);
   std::fprintf(stderr, "usage: see the comment at the top of core_cli.cpp\n");
   return 2;
 }

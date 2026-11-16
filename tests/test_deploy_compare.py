@@ -95,3 +95,28 @@ def test_compare_does_not_judge_model_when_inputs_differ(tmp_path):
     s = compare(stage, res)["models"]["px128"]["summary"]
     assert s["preprocess_exact"] == "0/1"
     assert "model_output_exact" not in s
+
+
+# The header and run.txt keys the firmware writes (firmware/perf_eval/main/perf_eval.cpp);
+# both builds share them, the Arduino one differs only in the values.
+BENCH_HEADER = ("run,board,build,idf_version,espdl_version,jpeg_decoder,cpu_mhz,model,model_bytes,input_size,"
+                "input_exponent,output_exponent,internal_kb,stage,runs,warmup,mean_ms,min_ms,max_ms,std_ms,fps")
+ARDUINO_ROW = ("run_001,freenove_esp32s3_cam_n16r8,arduino-esp32 3.3.12,v5.5.5,esp-dl bundled with core 3.3.12,"
+               "esp32-camera fmt2rgb888 (ROM TJpgDec),240,px192,649728,192,-6,-4,0,inference,50,5,"
+               "1.000,0.900,1.200,0.050,0.00")
+
+
+def test_compare_reads_firmware_bench_and_run_files(tmp_path, capsys):
+    from tinyseek.deploy.compare import print_report
+
+    stage, res = _stage(tmp_path, board_out_delta=0, board_in_delta=0)
+    (res / "bench.csv").write_text(BENCH_HEADER + "\n" + ARDUINO_ROW + "\n")
+    (res / "run.txt").write_text("board=freenove_esp32s3_cam_n16r8\nbuild=arduino-esp32 3.3.12\n"
+                                 "sdk_settings=dcache=32KB/32B icache=16KB spiram=80MHz sdk_opt=size\ncomplete=1\n")
+    report = compare(stage, res)
+    assert report["bench"][0]["build"] == "arduino-esp32 3.3.12"
+    assert report["bench"][0]["stage"] == "inference"
+    assert report["board"]["sdk_settings"].startswith("dcache=32KB")
+    print_report(report)
+    out = capsys.readouterr().out
+    assert "build=arduino-esp32 3.3.12" in out and "inference" in out

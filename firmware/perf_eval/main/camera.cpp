@@ -1,16 +1,57 @@
 #include "camera.hpp"
 
 #include "esp_camera.h"
-#include "esp_jpeg_dec.h"
-#include "esp_log.h"
 #include "esp_timer.h"
+#include "platform.hpp"
+#include "tinyseek_core/jpeg_info.hpp"
+
+#ifdef ARDUINO
+#include "arduino_config.h"  // only in the sketch
+#endif
+
+// The ESP-IDF build always uses esp_new_jpeg; the Arduino sketch uses esp32-camera's
+// fmt2rgb888 unless arduino_config.h selects esp_new_jpeg.
+#if defined(ARDUINO) && !TINYSEEK_ARDUINO_USE_ESP_NEW_JPEG
+#define TINYSEEK_JPEG_FMT2RGB888 1
+#include "img_converters.h"
+#else
+#define TINYSEEK_JPEG_FMT2RGB888 0
+#include "esp_jpeg_dec.h"
+#endif
 
 #define BOARD_FREENOVE_S3_CAM
 #include "board_pins.h"
 
-static const char *TAG = "camera";
-
 namespace perf {
+
+#if TINYSEEK_JPEG_FMT2RGB888
+
+const char *jpeg_decoder_name() { return TINYSEEK_ARDUINO_JPEG_DECODER; }
+
+// esp32-camera's converter (img_converters.h, bundled with the Arduino core). It is a
+// different decoder from the ESP-IDF build's, so jpeg_decode times and the jpg parity path
+// are not comparable between the two builds; the jpeg_decoder column says which ran.
+static bool decode_with_esp32_camera(const uint8_t *jpeg, size_t len, uint8_t *rgb, int w, int h) {
+  if (!fmt2rgb888(jpeg, len, PIXFORMAT_JPEG, rgb)) return false;
+#if TINYSEEK_FMT2RGB888_IS_BGR
+  // The model wants R,G,B; swapping is part of the timed decode, as a real app would pay it.
+  for (size_t i = 0, n = size_t(w) * h * 3; i < n; i += 3) {
+    const uint8_t t = rgb[i];
+    rgb[i] = rgb[i + 2];
+    rgb[i + 2] = t;
+  }
+#else
+  (void)w;
+  (void)h;
+#endif
+  return true;
+}
+
+#else
+
+const char *jpeg_decoder_name() { return "esp_new_jpeg " TINYSEEK_JPEG_VERSION; }
+
+#endif
 
 bool camera_init(uint32_t warmup_ms) {
   camera_config_t c = {};
@@ -41,7 +82,7 @@ bool camera_init(uint32_t warmup_ms) {
   c.grab_mode = CAMERA_GRAB_LATEST;
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_camera_init failed: 0x%x", err);
+    logln("esp_camera_init failed: 0x%x", err);
     return false;
   }
   sensor_t *s = esp_camera_sensor_get();
@@ -69,24 +110,34 @@ bool camera_init(uint32_t warmup_ms) {
 void camera_deinit() { esp_camera_deinit(); }
 
 bool decode_jpeg(const uint8_t *jpeg, size_t len, uint8_t *rgb, int w, int h) {
+  // Check the header first: the output buffer holds exactly w x h, and the Arduino
+  // decoder does not report the size it decoded.
+  tinyseek::JpegInfo info;
+  if (!tinyseek::jpeg_info(jpeg, len, info) || info.width != w || info.height != h || info.progressive) {
+    logln("JPEG is %dx%d%s, expected baseline %dx%d", info.width, info.height,
+          info.progressive ? " progressive" : "", w, h);
+    return false;
+  }
+#if TINYSEEK_JPEG_FMT2RGB888
+  return decode_with_esp32_camera(jpeg, len, rgb, w, h);
+#else
   // Decoder API per esp_new_jpeg 1.0.2 include/esp_jpeg_dec.h and its test_decoder.c.
   jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
-  config.output_type = JPEG_PIXEL_FORMAT_RGB888;
+  config.output_type = JPEG_PIXEL_FORMAT_RGB888;  // R,G,B byte order
   jpeg_dec_handle_t dec = nullptr;
   if (jpeg_dec_open(&config, &dec) != JPEG_ERR_OK) return false;
   jpeg_dec_io_t io = {};
-  jpeg_dec_header_info_t info = {};
+  jpeg_dec_header_info_t hdr = {};
   io.inbuf = const_cast<uint8_t *>(jpeg);
   io.inbuf_len = static_cast<int>(len);
-  bool ok = jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK && info.width == w && info.height == h;
+  bool ok = jpeg_dec_parse_header(dec, &io, &hdr) == JPEG_ERR_OK && hdr.width == w && hdr.height == h;
   if (ok) {
     io.outbuf = rgb;
     ok = jpeg_dec_process(dec, &io) == JPEG_ERR_OK;
-  } else {
-    ESP_LOGE(TAG, "JPEG is %dx%d, expected %dx%d", info.width, info.height, w, h);
   }
   jpeg_dec_close(dec);
   return ok;
+#endif
 }
 
 }  // namespace perf

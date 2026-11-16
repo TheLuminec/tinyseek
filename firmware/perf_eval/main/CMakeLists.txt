@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "platform.cpp" "camera.cpp"
+    SRCS "perf_eval.cpp" "platform.cpp" "camera.cpp"
     # board_pins.h is shared with the capture sketch so both firmwares use the same wiring.
     INCLUDE_DIRS "." "../../capture"
     # esp-dl, esp32-camera and esp_new_jpeg come from idf_component.yml, which makes them

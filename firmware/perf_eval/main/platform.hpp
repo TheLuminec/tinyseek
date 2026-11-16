@@ -1,4 +1,7 @@
-// Board services for the benchmark: SD card, files, heap snapshots, timing statistics.
+// Board services for the benchmark: SD card, files, heap snapshots, timing statistics,
+// logging and build identification. This is the platform shim: the ESP-IDF build and the
+// Arduino sketch (generated copies in firmware/perf_eval_arduino) differ only inside
+// platform.cpp and camera.cpp, behind #ifdef ARDUINO.
 #pragma once
 
 #include <cstddef>
@@ -13,6 +16,23 @@ constexpr const char *kMount = "/sdcard";
 constexpr const char *kRoot = "/sdcard/tinyseek_eval";
 
 bool mount_sd_card();
+
+// One printf-style line to the serial console. Under Arduino this goes through Serial,
+// because ESP_LOGx output there depends on the core's "Core Debug Level" menu.
+void logln(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+// What produced the numbers; written into every CSV row and run.txt.
+struct BuildInfo {
+  const char *build;          // "esp-idf" or "arduino-esp32 <core version>"
+  const char *idf_version;    // esp_get_idf_version(): the IDF the build (or the core) is based on
+  const char *espdl_version;  // the ESP-DL component, or the Arduino library carrying it
+  const char *camera_version;
+};
+BuildInfo build_info();
+
+// Cache sizes, PSRAM speed and the SDK's optimisation level from sdkconfig.h, e.g.
+// "dcache=64KB/64B icache=32KB spiram=80MHz sdk_opt=perf"; written to run.txt.
+std::string sdk_settings();
 
 // Whole file into a PSRAM buffer (caller frees with free_buffer). nullptr on failure.
 uint8_t *read_file(const std::string &path, size_t *size);

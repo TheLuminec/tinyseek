@@ -20,14 +20,24 @@ the SD card goes through these steps:
 Nothing here has been compiled for the ESP32-S3 or run on a board yet. See
 "Verification status" at the end.
 
-## Why ESP-IDF and not Arduino
+## ESP-IDF project and Arduino sketch
 
-ESP-DL is an ESP-IDF component (`espressif/esp-dl` on the component registry), with
-prebuilt libraries tied to IDF releases. The Arduino core bundles its own IDF build and
-cannot pull ESP-DL 3.x reliably. A plain IDF project also pins every version, and the
-benchmark numbers depend on those versions (cache and PSRAM settings, compiler flags).
-The capture sketch stays on Arduino; this project reuses its `board_pins.h` and copies
-its sensor settings.
+This ESP-IDF project is the source of truth. The same evaluation also builds as an Arduino
+sketch in `../perf_eval_arduino`, for flashing from the Arduino IDE. Its `src/` folder
+holds generated copies of these sources (`python -m tinyseek.deploy.arduino_sketch`). Its
+README lists the board settings and how its numbers differ from these.
+
+Why keep an ESP-IDF build at all:
+
+- It pins every version (IDF, ESP-DL 3.3.15, cache and PSRAM settings, compiler flags),
+  and the benchmark numbers depend on them.
+- arduino-esp32 3.3.12 ships esp-dl 3.3.11 precompiled, with the core's smaller caches
+  and size optimisation fixed.
+
+Build differences live behind `#ifdef ARDUINO` in `main/platform.cpp` and
+`main/camera.cpp`. Both builds read the same card and write the same files. The `build`
+and `jpeg_decoder` columns and `run.txt` say which build produced a result. Both reuse the
+capture sketch's `board_pins.h` and copy its sensor settings.
 
 ## Versions (pinned)
 
@@ -58,8 +68,10 @@ version is read from the component manager's downloaded manifest at build time, 
   flip or mirror, AWB auto, AE level 0, aec2 off, 4x gain ceiling, lens/pixel corrections
   on, and 4 s of warm-up frames.
 - Models load from the SD card with `dl::Model(path, fbs::MODEL_LOCATION_IN_SDCARD, ...)`,
-  so swapping a model needs no reflash. ESP-DL reads the whole file into PSRAM. The flash
-  sizes, input sizes and exponents are taken from the model, never assumed.
+  so swapping a model needs no reflash. ESP-DL reads the whole file into PSRAM. Input
+  size, dtype and exponents are read from the loaded model, never assumed. A model counts
+  as loaded when `get_fbs_model()` and its input and output tensors are non-null. That
+  check works in both ESP-DL 3.3.15 and 3.3.11; `is_built()` exists only from 3.3.15.
 
 ## 1. Stage the SD card (PC)
 
@@ -149,7 +161,9 @@ and `run.txt` gains `complete=1`; a folder without that line is from an interrup
 What one boot does:
 
 1. Mount the card, read `bench.txt`, create `results/run_NNN`, and record `run.txt`
-   (board, IDF/ESP-DL/camera/JPEG versions, CPU MHz, settings, PSRAM and internal totals).
+   (board, build, `sdk_settings` (cache sizes, PSRAM speed and SDK optimisation from
+   sdkconfig.h), IDF/ESP-DL/camera versions, JPEG decoder, CPU MHz, settings, PSRAM and
+   internal totals).
 2. If `camera=1`, start the camera and drop 4 s of frames.
 3. For each model:
    1. Load it and build the preprocessing plan.
@@ -177,7 +191,7 @@ There is one row per model and stage. Each row carries these columns:
 
 | Column(s) | Meaning |
 | --- | --- |
-| `run`, `board`, `idf_version`, `espdl_version`, `cpu_mhz` | which run and setup produced the row |
+| `run`, `board`, `build`, `idf_version`, `espdl_version`, `jpeg_decoder`, `cpu_mhz` | which run and setup produced the row. `build` is `esp-idf` or `arduino-esp32 <core version>`, and `jpeg_decoder` names the decoder used |
 | `model`, `model_bytes`, `input_size` | the model |
 | `input_exponent`, `output_exponent` | read from the loaded model |
 | `internal_kb` | the ESP-DL internal-RAM limit used |
@@ -190,7 +204,7 @@ There is one row per model and stage. Each row carries these columns:
 | --- | --- |
 | `load` | `dl::Model` construction: SD read, parse, parameter copy, memory planning (1 run) |
 | `preprocess_plan` | one-time resample coefficients and quantisation tables for 800x600 to S (1 run) |
-| `jpeg_decode` | `bench.jpg` 800x600 to RGB888 with esp_new_jpeg |
+| `jpeg_decode` | `bench.jpg` 800x600 to RGB888, including the header size check (esp_new_jpeg here; see `jpeg_decoder`) |
 | `preprocess` | RGB888 to int8 NHWC letterboxed input (Pillow-exact resample, normalise, quantise) |
 | `inference` | `Model::run()` only; the input copy into the model is outside the timer |
 | `postprocess` | decode to boxes (peaks, top-k, threshold, letterbox inverse) |
@@ -229,11 +243,15 @@ That is the quantization effect, not a deployment bug.
 ## Code layout
 
 ```
-main/main.cpp                benchmark, parity and camera loops, CSV output
-main/platform.{hpp,cpp}      SD card (SDMMC 1-bit), files, heap snapshots, timing statistics
-main/camera.{hpp,cpp}        OV2640 with the frozen settings; JPEG decode (esp_new_jpeg)
+main/perf_eval.{hpp,cpp}     perf_eval_run(): benchmark, parity and camera loops, CSV output;
+                             app_main() calls it (the Arduino sketch calls it from setup())
+main/platform.{hpp,cpp}      platform shim: SD card, files, heap snapshots, timing statistics,
+                             logging, build info (#ifdef ARDUINO for the sketch)
+main/camera.{hpp,cpp}        OV2640 with the frozen settings; JPEG decode (esp_new_jpeg here,
+                             esp32-camera's fmt2rgb888 in the sketch)
 components/tinyseek_core/    portable C++ (no ESP headers): Pillow-exact letterbox and
-                             quantisation (preprocess.*), CenterNet decode (decode.*)
+                             quantisation (preprocess.*), CenterNet decode (decode.*),
+                             JPEG header check (jpeg_info.*)
 host_test/core_cli.cpp       host driver for tinyseek_core, used by tests/test_deploy_core.py
 ```
 
@@ -257,13 +275,15 @@ which calls the evaluation code directly).
   ties and top-k.
 - esp-ppq's executor gives the same output for our int8 input as for the float input.
   This confirms ROUND_HALF_UP and saturation on the input.
+- The JPEG header check (`jpeg_info`) reports the same size as Pillow, flags progressive
+  files, and rejects non-JPEG and truncated input (2026-11-16).
 
 **Not verified (needs a real build and the board):**
 
 - Compiling against the real ESP-IDF/ESP-DL headers. Only a syntax check against stub
   headers was done.
 - That ESP-DL 3.3.15 loads esp-ppq 1.3.11 files, including the int16 depthwise layers.
-- `is_built()` behaviour after a failed load.
+- That the `get_fbs_model()` check catches a failed load.
 - Writing the input through `TensorBase::data`.
 - `heap_caps_aligned_alloc` buffers working with esp_new_jpeg.
 - The RGB byte order of esp_new_jpeg's output, documented as R,G,B.
