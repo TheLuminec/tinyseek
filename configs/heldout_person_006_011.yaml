@@ -1,0 +1,9 @@
+# Person, synthetic-only detector, also scored on sessions 006 and 011 (118 hand-reviewed
+# photos, 159 person boxes): the walkthrough with the owner in it and the session with people
+# close to the lens. Pass synth_set=<set> label_variant="".
+base: synth_only.yaml
+prompt: person
+condition: heldout_person
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s006_011.json, images: esp32cam/raw}

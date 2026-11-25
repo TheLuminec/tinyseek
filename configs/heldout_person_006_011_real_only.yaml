@@ -1,0 +1,8 @@
+# Person, real COCO images only, also scored on sessions 006/011: the real-data reference for
+# configs/heldout_person_006_011.yaml.
+base: real_only.yaml
+prompt: person
+condition: heldout_real_only
+eval:
+  sets:
+    esp32_heldout: {ann: esp32cam/reviewed_labels_s006_011.json, images: esp32cam/raw}

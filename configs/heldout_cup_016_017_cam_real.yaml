@@ -1,0 +1,9 @@
+# Cup: synthetic set + camera photos outside 016/017 + real COCO images, scored on 016/017.
+# Pass synth_set=<set> label_variant="".
+base: heldout_cup_016_017_cam.yaml
+condition: heldout_cup_cam_real
+train:
+  sources:
+    - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set}"}
+    - {ann: "esp32cam/reviewed_labels_no016_017.json", images: esp32cam/raw, repeat: "{cam_repeat}"}
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017}
