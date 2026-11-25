@@ -66,11 +66,33 @@ def exponent_violations(graph) -> list[str]:
     return bad
 
 
-def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set: str | None = None) -> dict:
+QUANT_TYPES = ("w8a8", "w16a16")
+
+
+def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set: str | None = None,
+           quant: str = "w8a8", int16_layers: list[str] | None = None, out_dir: Path | None = None) -> dict:
+    """Quantize ``run``'s last.pt for ESP-DL and write model.espdl, model_meta.json, export.json.
+
+    ``quant`` is ``w8a8`` (int8, with any layer that breaks ESP-DL's exponent rule moved to
+    int16) or ``w16a16`` (every layer int16: lossless on the held-out photos, slower).
+    ``int16_layers`` names extra layers to run in int16 (mixed precision). ``out_dir`` writes
+    the export elsewhere, with copies of config.yaml and last.pt so it is a complete run
+    directory for staging; by default it goes into the run itself. export.json records the
+    recipe, so the board-parity tools can rebuild the same graph.
+    """
+    import shutil
+
     from esp_ppq import QuantizationSettingFactory
     from esp_ppq.api import espdl_quantize_torch, get_target_platform
     from esp_ppq.executor import TorchExecutor
 
+    if quant not in QUANT_TYPES:
+        raise SystemExit(f"quant must be one of {QUANT_TYPES}, got {quant!r}")
+    out_dir = Path(out_dir) if out_dir else run
+    if out_dir != run:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("config.yaml", "last.pt"):
+            shutil.copy2(run / name, out_dir / name)
     cfg = load_config(run / "config.yaml")
     mcfg = cfg["model"]
     size = mcfg["input_size"]
@@ -86,10 +108,11 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
         DetectionDataset(calib, size, model.stride, train=False), batch_size=1, collate_fn=collate_eval
     )
 
-    out_file = run / "model.espdl"
+    out_file = out_dir / "model.espdl"
+    bits = 16 if quant == "w16a16" else 8
 
     def quantize(int16_ops: list[str]):
-        setting = QuantizationSettingFactory.espdl_setting()
+        setting = QuantizationSettingFactory.espdl_setting(bits)
         setting.equalization = True
         return espdl_quantize_torch(
             model=ExportWrapper(model),
@@ -98,7 +121,7 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
             calib_steps=len(calib),
             input_shape=[1, 3, size, size],
             target=target,
-            num_of_bits=8,
+            num_of_bits=bits,
             collate_fn=lambda batch: batch["image"],
             dispatching_override={op: get_target_platform(target, "w16a16") for op in int16_ops},
             setting=setting,
@@ -107,14 +130,17 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
             verbose=0,
         )
 
-    graph = quantize([])
-    int16_ops = exponent_violations(graph)
-    if int16_ops:
-        print(f"re-quantizing with {len(int16_ops)} layer(s) in int16: {int16_ops}")
+    int16_ops = list(int16_layers or []) if bits == 8 else []
+    graph = quantize(int16_ops)
+    for _ in range(4):  # moving a layer to int16 can change a neighbour's exponents
+        bad = [op for op in exponent_violations(graph) if op not in int16_ops] if bits == 8 else []
+        if not bad:
+            break
+        print(f"re-quantizing with {len(bad)} more layer(s) in int16: {bad}")
+        int16_ops += bad
         graph = quantize(int16_ops)
-        remaining = exponent_violations(graph)
-        if remaining:
-            raise SystemExit(f"ESP-DL exponent constraint still violated by {remaining}")
+    else:
+        raise SystemExit(f"ESP-DL exponent constraint still violated by {bad}")
     meta = {
         "prompt": cfg["prompt"],
         "input_size": size,
@@ -125,9 +151,11 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
         "num_classes": model.num_classes,
         "output_channels": ["heatmap_logit"] * model.num_classes + ["log_w", "log_h", "off_x", "off_y"],
         "target": target,
+        "quant": quant,
     }
-    (run / "model_meta.json").write_text(json.dumps(meta, indent=2))
-    result = {"espdl_bytes": out_file.stat().st_size, "int16_layers": int16_ops}
+    (out_dir / "model_meta.json").write_text(json.dumps(meta, indent=2))
+    result = {"espdl_bytes": out_file.stat().st_size, "quant": quant, "int16_layers": int16_ops,
+              "calib_images": len(calib), "source_run": str(run)}
 
     if eval_images:
         name = eval_set or next(iter(cfg["eval"]["sets"]))
@@ -137,15 +165,17 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
         recs = load_coco_records(ann, root / fill(spec["images"], cfg), category_id)[:eval_images]
         ids = {r.image_id for r in recs}
         ev = cfg["eval"]
-        int8 = QuantizedAdapter(TorchExecutor(graph, device="cpu"), model.num_classes, model.stride)
+        quantized = QuantizedAdapter(TorchExecutor(graph, device="cpu"), model.num_classes, model.stride)
 
         def ap(m: nn.Module | QuantizedAdapter) -> float:
             dets = predict(m, recs, size, torch.device("cpu"), ev["score_threshold"], ev["max_detections"],
                            batch_size=16, num_workers=4)
             return coco_ap50(ann, dets, category_id, image_ids=sorted(ids))
 
-        result.update({"eval_set": name, "eval_images": len(recs), "ap50_float": ap(model), "ap50_int8": ap(int8)})
-    (run / "export.json").write_text(json.dumps(result, indent=2))
+        # "ap50_int8" is the quantized graph's AP whatever the bit width (name kept for older readers).
+        result.update({"eval_set": name, "eval_images": len(recs), "ap50_float": ap(model),
+                       "ap50_int8": ap(quantized)})
+    (out_dir / "export.json").write_text(json.dumps(result, indent=2))
     return result
 
 
@@ -156,8 +186,12 @@ def main() -> None:
     parser.add_argument("--eval-images", type=int, default=1000, help="0 to skip the int8 accuracy check")
     parser.add_argument("--target", default="esp32s3")
     parser.add_argument("--eval-set", help="eval set for the int8 accuracy check (default: the run's first one)")
+    parser.add_argument("--quant", choices=QUANT_TYPES, default="w8a8")
+    parser.add_argument("--int16-layers", nargs="*", default=[], help="extra layers to run in int16 (w8a8 only)")
+    parser.add_argument("--out-dir", type=Path, help="write the export here instead of into the run")
     args = parser.parse_args()
-    print(json.dumps(export(Path(args.run), args.calib_images, args.eval_images, args.target, args.eval_set), indent=2))
+    print(json.dumps(export(Path(args.run), args.calib_images, args.eval_images, args.target, args.eval_set,
+                            args.quant, args.int16_layers, args.out_dir), indent=2))
 
 
 if __name__ == "__main__":
