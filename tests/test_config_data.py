@@ -85,3 +85,27 @@ def test_generate_prompt_overrides():
     cup = resolve_prompt_overrides(load_config("configs/generate.yaml", ["prompt=cup"]))
     assert person["domain_lora"] != cup["domain_lora"]
     assert person["synth_set"] == cup["synth_set"]  # one set name, per-prompt folders
+
+
+def test_split_sessions_keeps_and_drops_whole_sessions():
+    from tinyseek.data.split_sessions import split
+
+    coco = {"images": [{"id": 1, "file_name": "session_013/a.jpg"}, {"id": 2, "file_name": "session_006/b.jpg"},
+                       {"id": 3, "file_name": "session_014/c.jpg"}],
+            "annotations": [{"id": 1, "image_id": 1}, {"id": 2, "image_id": 2}, {"id": 3, "image_id": 3}]}
+    out = split(coco, exclude={"session_013", "session_014"})
+    assert [i["id"] for i in out["images"]] == [2] and [a["id"] for a in out["annotations"]] == [2]
+    out = split(coco, include={"session_013", "session_014"})
+    assert [i["id"] for i in out["images"]] == [1, 3] and out["info"]["sessions"] == ["session_013", "session_014"]
+
+
+def test_source_repeat_oversamples(tmp_path):
+    import json
+
+    from tinyseek.train.train import load_sources
+
+    images = [{"id": i, "file_name": f"{i}.jpg", "width": 64, "height": 48} for i in range(3)]
+    (tmp_path / "l.json").write_text(json.dumps({"images": images, "annotations": [], "categories": []}))
+    cfg = {"data_root": str(tmp_path), "seed": 0, "cam_repeat": 4,
+           "train": {"sources": [{"ann": "l.json", "images": ".", "repeat": "{cam_repeat}"}]}}
+    assert len(load_sources(cfg, 27)) == 12

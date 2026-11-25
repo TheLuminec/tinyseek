@@ -37,6 +37,11 @@ def load_sources(cfg: dict, category_id: int) -> list[Record]:
         limit = src.get("max_images")
         if isinstance(limit, str):  # "{synth_images}": the limit comes from a top-level key, so overrides can set it
             limit = int(fill(limit, cfg))
+        repeat = src.get("repeat", 1)
+        if isinstance(repeat, str):  # "{cam_repeat}", like max_images
+            repeat = int(fill(repeat, cfg))
+        if repeat > 1:  # oversample a small source, e.g. a few hundred camera photos
+            recs = recs * repeat
         if limit is not None and limit < len(recs):
             rng = np.random.default_rng([cfg["seed"], i])
             recs = [recs[j] for j in sorted(rng.choice(len(recs), limit, replace=False))]
