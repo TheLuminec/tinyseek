@@ -1,0 +1,58 @@
+# People as the camera sees them: the rooms, viewpoints and light of generate_comfy_far_v2.yaml
+# with a person as the subject. People pass close to the camera as often as they stand far
+# away, so the framings run from tiny in the distance to cut off by the frame edge (camera
+# photos have person boxes of every size). Teacher text: "a person" (configs/prompts.yaml).
+base: generate_comfy_far_v2.yaml
+prompt: person
+seed: 2
+synth_set: qwen21_turbo_person_v1
+
+template: >-
+  An ordinary, unremarkable snapshot of {location}. The picture was taken by a small camera
+  {viewpoint}, not aimed at anything in particular. It is a very wide-angle view that takes in
+  the whole room, from the floor in front of the camera to the far wall. {subject} {placement}.
+  The person is {framing}. The place is lived-in and a little messy, with {clutter}.
+  {lighting}. The whole scene is in the same slightly soft focus with no background blur,
+  neutral white balance, natural colours. A candid moment, not posed, not looking at the
+  camera, not a stock photo. No text, no watermark.
+
+fields:
+  framing:
+    - far away at the back of the room, small in the picture
+    - on the far side of the room, much smaller than the furniture around them
+    - in the middle distance, not the focus of the picture
+    - small and off to the left side of the picture
+    - small and off to the right side of the picture
+    - partly hidden behind furniture
+    - a few steps from the camera, off-centre
+    - close to the camera and partly cut off by the edge of the frame
+    - passing right in front of the camera, so only part of their body is in the frame
+
+objects:
+  person:
+    subject:
+      - A young man in a grey hoodie and jeans
+      - A woman in a black jacket with her hair tied back
+      - A tall man in a white t-shirt and shorts
+      - A woman in a red sweater and dark trousers
+      - A student in a navy sweatshirt carrying a laptop
+      - An older man in a plaid shirt
+      - A woman in a green coat
+      - A man in a dark blue work shirt
+      - A teenager in a black t-shirt and sweatpants
+      - A woman in a yellow top and jeans
+      - A man in a winter jacket and a beanie
+      - A person in pyjamas
+    placement:
+      - is standing and looking at a phone
+      - is walking across the room
+      - is sitting on the sofa
+      - is sitting at a desk with a laptop
+      - is standing at the kitchen counter
+      - is bending down to pick something up from the floor
+      - is reaching up to a shelf
+      - is sitting on a chair, turned away
+      - is walking towards a door
+      - is carrying a cardboard box
+      - is leaning against the wall
+      - is lying on the sofa

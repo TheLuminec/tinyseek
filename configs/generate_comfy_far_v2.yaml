@@ -1,0 +1,106 @@
+# A second far-object backpack set: more of what worked in qwen21_turbo_far_v1 (small,
+# far-away objects; 0.340 held-out AP@0.5 at 128 px, data curve still rising at 1,000
+# images), with wider variety so the extra images are not near-copies:
+#   - homes like the camera's own: dark wood floors, beige walls, dark kitchen cabinets,
+#     leather sofas, stairs with white railings (the training photos outside 013/014);
+#   - the camera's typical light: dim rooms with a blown-out window, sunlight striping the floor;
+#   - some backpacks worn by a person far away, as they often are in real use;
+#   - a new seed, so no prompt repeats far_v1's.
+base: generate_comfy_far.yaml
+seed: 1
+synth_set: qwen21_turbo_far_v2
+
+template: >-
+  An ordinary, unremarkable snapshot of {location}. The picture was taken by a small camera
+  {viewpoint}, not aimed at anything in particular. It is a very wide-angle view that takes in
+  the whole room, from the floor in front of the camera to the far wall. {subject} {placement}.
+  It is {framing}. The place is lived-in and a little messy, with {clutter}. {lighting}. The
+  whole scene is in the same slightly soft focus with no background blur, neutral white
+  balance, natural colours. Casual and unstaged, not a product photo or a stock photo. No
+  text, no watermark.
+
+fields:
+  location:
+    - an apartment living room with dark wood floors, beige walls, a leather sofa and a television
+    - an open apartment kitchen with dark wood cabinets, a granite counter and bar stools
+    - an apartment hallway with beige walls, white doors and a staircase with white railings
+    - a living room with a ceiling fan, tall windows with blinds and a coffee table
+    - a student bedroom with posters on a pale blue wall, an unmade bed and a wooden floor
+    - a small home office with a desk, a bookcase and a patterned rug
+    - a kitchen with wooden cabinets, a tiled floor and a dining table
+    - a university classroom with rows of desks, a projector screen and grey carpet
+    - a library study area with tall wooden bookshelves and long tables
+    - an open-plan office with cubicle partitions and blue carpet
+    - a garage with a concrete floor, bare block walls and a workbench
+    - a dorm room with a bunk bed, a cluttered desk and a small fridge
+    - a break room with vending machines, a tiled floor and plastic chairs
+    - a laundry room with a washing machine, a drying rack and white walls
+    - a building lobby with benches, large windows and a polished stone floor
+    - a basement with carpet, a couch, a treadmill and storage boxes
+    - a bedroom with a dark wood dresser, beige carpet and closet doors
+    - an entryway with a coat rack, a shoe mat and a closed front door
+  viewpoint:
+    - left on a table at about desk height, tilted slightly down
+    - left on a low shelf near the floor, looking across the room
+    - placed on a high shelf, looking down across the room
+    - sitting on a windowsill at chest height
+    - left on a kitchen counter, looking across the room
+    - sitting on top of a dresser, looking across the room
+  clutter:
+    - cables, papers, a jacket over a chair and a couple of cardboard boxes
+    - shoes, a laundry basket, books and a charger on the floor
+    - a monitor, a keyboard, mugs and stacks of paper
+    - chairs pushed in at odd angles, a bin and a noticeboard
+    - shelves of boxes, tools and plastic tubs
+    - folded clothes, a fan, a lamp and an open drawer
+    - grocery bags, a coat rack and an umbrella
+    - plants, a pile of magazines, a blanket and a pair of slippers
+    - sports gear, a bicycle helmet, a water bottle and a towel
+    - paper towels, dishes, cereal boxes and a fruit bowl
+    - a throw pillow, a game controller, a remote and a blanket on the sofa
+  lighting:
+    - Lit by ordinary ceiling lights at night
+    - Daylight comes from a window on one side, and the window itself is overexposed
+    - Dim evening light from a single lamp
+    - Flat fluorescent ceiling lighting
+    - Overcast daylight, a little dim
+    - Mixed daylight and ceiling light, uneven across the room
+    - The room is dim and the only bright thing is a blown-out window
+    - Low sun comes through window blinds and paints bright stripes across the floor
+    - Recessed ceiling spotlights leave dark corners
+
+objects:
+  backpack:
+    subject:
+      - A black nylon backpack
+      - A grey school backpack
+      - A dark grey laptop backpack
+      - A navy blue backpack with a front pocket
+      - A red hiking backpack
+      - An olive green canvas backpack
+      - A tan rucksack with buckled straps
+      - A faded blue daypack
+      - A black laptop backpack with mesh side pockets
+      - A bright yellow child's backpack
+      - A dark green backpack with a water bottle in its side pocket
+      - A purple backpack
+      - A large camping backpack
+      - A light grey backpack with black straps
+      - A maroon backpack
+      - A small black drawstring backpack
+    placement:
+      - is lying on its side on the floor
+      - is leaning against the wall on the floor
+      - is sitting on the seat of a chair
+      - is hanging from the back of a chair
+      - is on a table among other things
+      - is on the floor next to a table leg
+      - is hanging from a hook on the wall
+      - is lying half open on the floor with things spilling out
+      - is on a low shelf
+      - is slumped in a corner of the room
+      - is on the sofa next to a pillow
+      - is on a kitchen counter
+      - is on a bed
+      - is worn on the back of a person walking across the far side of the room
+      - is worn by a person standing at the far end of the room, seen from behind
