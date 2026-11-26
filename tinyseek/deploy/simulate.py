@@ -11,6 +11,7 @@ file. CPU only; about 2 minutes per model on a desktop CPU.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,20 +119,29 @@ def rebuild(run: Path, scratch: Path, calib_images: int = 512, target: str = "es
     loader = DataLoader(DetectionDataset(calib, size, model.stride, train=False), batch_size=1, collate_fn=collate_eval)
     out_file = scratch / "model.espdl"
 
+    # The export's recipe (tinyseek.train.export writes it to export.json): bit width and the
+    # layers it ran in int16. Older exports have neither and were plain w8a8.
+    recipe = json.loads((run / "export.json").read_text()) if (run / "export.json").exists() else {}
+    bits = 16 if recipe.get("quant") == "w16a16" else 8
+
     def quantize_graph(int16_ops: list[str]):
-        setting = QuantizationSettingFactory.espdl_setting()
+        setting = QuantizationSettingFactory.espdl_setting(bits)
         setting.equalization = True
         return espdl_quantize_torch(
             model=ExportWrapper(model), espdl_export_file=str(out_file), calib_dataloader=loader,
-            calib_steps=len(calib), input_shape=[1, 3, size, size], target=target, num_of_bits=8,
+            calib_steps=len(calib), input_shape=[1, 3, size, size], target=target, num_of_bits=bits,
             collate_fn=lambda batch: batch["image"],
             dispatching_override={op: get_target_platform(target, "w16a16") for op in int16_ops},
             setting=setting, device="cpu", error_report=False, verbose=0,
         )
 
-    graph = quantize_graph([])
-    int16_ops = exponent_violations(graph)
-    if int16_ops:
+    int16_ops = list(recipe.get("int16_layers", [])) if bits == 8 else []
+    graph = quantize_graph(int16_ops)
+    for _ in range(4):  # as export does: add any layer that now breaks the exponent rule
+        bad = [op for op in exponent_violations(graph) if op not in int16_ops] if bits == 8 else []
+        if not bad:
+            break
+        int16_ops += bad
         graph = quantize_graph(int16_ops)
     in_var = graph.inputs[next(iter(graph.inputs))]
     out_var = graph.outputs[next(iter(graph.outputs))]
