@@ -135,6 +135,7 @@ void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponen
   plan.size = size;
   plan.exponent = exponent;
   plan.resample = resample;
+  plan.pad_value = norm.pad_value;
   plan.lb = compute_letterbox(src_w, src_h, size);
   if (resample == Resample::kBilinear) {
     plan.bx = bilinear2_axis(src_w, plan.lb.resized_w);
@@ -173,7 +174,8 @@ namespace {
 
 template <typename T>
 void fill_pad(const PreprocessPlan &plan, const T (*lut)[256], T *out) {
-  const T pad[3] = {lut[0][114], lut[1][114], lut[2][114]};
+  const uint8_t v = plan.pad_value;  // 114 unless the model's sidecar says otherwise
+  const T pad[3] = {lut[0][v], lut[1][v], lut[2][v]};
   for (int i = 0; i < plan.size * plan.size; ++i) {
     out[i * 3 + 0] = pad[0];
     out[i * 3 + 1] = pad[1];

@@ -136,10 +136,14 @@ bool wifi_start(const Settings &s, std::string *info) {
     WiFi.begin(s.wifi_ssid.c_str(), s.wifi_password.empty() ? nullptr : s.wifi_password.c_str());
     for (int i = 0; i < 80 && WiFi.status() != WL_CONNECTED; ++i) delay(250);
     if (WiFi.status() != WL_CONNECTED) {
-      *info = "{\"mode\":\"sta\",\"ok\":false,\"ssid\":\"" + json_escape(s.wifi_ssid) + "\"}";
-      return false;  // the core keeps retrying in the background; /status.json shows it later
+      // Not joined yet: the core keeps retrying in the background, so the interface is up
+      // and the web server starts anyway; /status.json shows when the connection comes.
+      *info = "{\"mode\":\"sta\",\"ok\":true,\"connected\":false,\"ssid\":\"" + json_escape(s.wifi_ssid) +
+              "\",\"hostname\":\"" + json_escape(s.hostname) + "\"}";
+      return true;
     }
-    *info = "{\"mode\":\"sta\",\"ok\":true,\"ip\":\"" + std::string(WiFi.localIP().toString().c_str()) +
+    *info = "{\"mode\":\"sta\",\"ok\":true,\"connected\":true,\"ip\":\"" +
+            std::string(WiFi.localIP().toString().c_str()) +
             "\",\"hostname\":\"" + json_escape(s.hostname) + "\",\"rssi\":" + std::to_string(WiFi.RSSI()) + "}";
     return true;
   }

@@ -81,6 +81,7 @@ struct PreprocessPlan {
   ResampleAxis horiz, vert;           // kPillow
   BilinearAxis bx, by;                // kBilinear
   int ybox_first = 0, ybox_rows = 0;  // source rows the vertical pass reads (kPillow)
+  uint8_t pad_value = 114;            // letterbox fill (NormalizeParams::pad_value), as a uint8 pixel
   int8_t lut[3][256];                 // uint8 pixel -> quantized normalized value (int8 input)
   int16_t lut16[3][256];              // the same for an int16 input tensor (w16a16 models)
 };

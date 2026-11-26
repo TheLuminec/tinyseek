@@ -47,7 +47,7 @@ def cli(tmp_path_factory) -> Path:
         pytest.skip("g++ not available")
     out = tmp_path_factory.mktemp("detector") / "logic_cli"
     subprocess.run(["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", str(DET / "src" / "detector_logic.cpp"),
-                    str(DET / "host_test" / "logic_cli.cpp"), "-o", str(out)], check=True)
+                    str(DET / "src" / "kv.cpp"), str(DET / "host_test" / "logic_cli.cpp"), "-o", str(out)], check=True)
     return out
 
 
@@ -108,6 +108,69 @@ def test_with_prompt_replaces_or_appends(cli, tmp_path):
     assert out == b"a=1\r\nprompt=cup\n# wifi=sta\nb=2\n"  # other lines kept byte for byte
     cfg.write_text("a=1\n")
     assert run(cli, "with_prompt", str(cfg), "cup") == ["a=1", "prompt=cup"]
+
+
+# --- review fixes (2026-11-26) -----------------------------------------------------------------
+
+def test_uncommented_footer_line_wins_over_the_staged_value(cli, tmp_path):
+    """#1: '#   wifi=sta' with only the '#' deleted leaves leading spaces; the key is still
+    'wifi' and, coming later, overrides the staged wifi=off."""
+    s, warnings = settings(cli, tmp_path, "prompt=backpack\r\nwifi=off\r\n   wifi=sta\r\n   wifi_ssid=net\r\n"
+                                          "\twifi_password = secret123 \r\n")
+    assert warnings == []
+    assert (s["wifi"], s["wifi_ssid"]) == ("sta", "net")
+    s, _ = settings(cli, tmp_path, "led=off\nled = onboard\n  # led=external\n")
+    assert s["led"] == "onboard"  # later line wins; an indented '#' line is a comment
+
+
+def test_with_prompt_matches_spaced_keys_and_drops_duplicates(cli, tmp_path):
+    """#1: 'prompt = cup' is the prompt line; a second prompt line must not survive."""
+    cfg = tmp_path / "c.txt"
+    cfg.write_bytes(b"prompt = cup\r\nsource=camera\r\n  prompt=mug\n# prompt=old\n")
+    out = subprocess.run([str(cli), "with_prompt", str(cfg), "backpack"], capture_output=True, check=True).stdout
+    assert out == b"prompt=backpack\nsource=camera\r\n# prompt=old\n"
+    cfg.write_bytes(out)
+    s, warnings = settings(cli, tmp_path, out.decode())
+    assert s["prompt"] == "backpack" and warnings == []
+
+
+def test_bom_is_ignored(cli, tmp_path):
+    """#7: a UTF-8 BOM (Windows Notepad) before the first key."""
+    s, warnings = settings(cli, tmp_path, "﻿prompt=cup\nsource=replay\n")
+    assert warnings == [] and (s["prompt"], s["source"]) == ("cup", "replay")
+    cfg = tmp_path / "bom.txt"
+    cfg.write_bytes(b"\xef\xbb\xbfprompt=cup\nsource=replay\n")
+    out = subprocess.run([str(cli), "with_prompt", str(cfg), "mug"], capture_output=True, check=True).stdout
+    assert out == b"\xef\xbb\xbfprompt=mug\nsource=replay\n"
+    assert read_kv(cfg) == {"prompt": "cup", "source": "replay"}  # the PC reader agrees
+
+
+def test_prompt_save_never_drops_an_unreadable_config(cli, tmp_path):
+    """#2: config.txt exists but cannot be read -> skip the save; missing -> prompt only."""
+    cfg = tmp_path / "c.txt"
+    cfg.write_text("wifi=sta\nprompt=cup\n")
+    assert run(cli, "save", "1", "0", str(cfg), "mug") == ["SKIP"]
+    assert run(cli, "save", "1", "1", str(cfg), "mug") == ["wifi=sta", "prompt=mug"]
+    assert run(cli, "save", "0", "0", str(cfg), "mug") == ["prompt=mug"]
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    assert run(cli, "save", "1", "1", str(empty), "mug") == ["prompt=mug"]
+
+
+@pytest.mark.parametrize("cfg,tmp,action", [("1", "0", "none"), ("0", "0", "none"), ("0", "1", "restore"),
+                                            ("1", "1", "delete")])
+def test_config_recovery_after_an_interrupted_save(cli, cfg, tmp, action):
+    """#2: write config.tmp, remove config.txt, rename. Only the copy -> restore it; both ->
+    config.txt is intact and the copy is stale."""
+    assert run(cli, "recover", cfg, tmp) == [action]
+
+
+@pytest.mark.parametrize("pending,current,replay,action", [
+    ("cup", "backpack", "0", "switch"), ("cup", "backpack", "1", "refuse"), ("backpack", "backpack", "0", "none"),
+    ("", "backpack", "1", "none")])
+def test_prompt_switch_is_refused_during_replay(cli, pending, current, replay, action):
+    """#5: a request queued before the replay began must not switch the model mid-replay."""
+    assert run(cli, "action", pending, current, replay) == [action]
 
 
 def test_frame_json_lines(cli):

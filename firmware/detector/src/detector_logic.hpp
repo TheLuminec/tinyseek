@@ -54,8 +54,25 @@ std::string normalize_prompt(const std::string &typed);
 // [a-z0-9_]{1,32}: safe as a file name on FAT and in a URL.
 bool valid_prompt(const std::string &name);
 
-// config.txt text with its prompt= line replaced (or appended); every other line kept.
+// config.txt text with its prompt line replaced (or appended); every other line kept
+// byte for byte. Prompt lines are matched by trimmed key ("prompt = cup" too), and extra
+// prompt lines are dropped.
 std::string with_prompt(const std::string &config_text, const std::string &prompt);
+
+// What to write when saving a new prompt: false (do not save) when config.txt exists but
+// could not be read, since writing would drop every other setting. A missing file gives
+// a config holding just the prompt.
+bool config_for_save(bool exists, bool read_ok, const std::string &text, const std::string &prompt,
+                     std::string *out);
+
+// At boot, after a save that was interrupted (see persist_prompt in detector_app.cpp).
+enum class ConfigRecovery : uint8_t { kNone, kRestoreTmp, kDeleteTmp };
+ConfigRecovery config_recovery(bool config_exists, bool tmp_exists);
+
+// A requested prompt against the current one: switch, nothing to do, or refuse because
+// a replay is running (its results file must hold one model only).
+enum class PromptAction : uint8_t { kNone, kSwitch, kRefuseReplay };
+PromptAction prompt_action(const std::string &pending, const std::string &current, bool replay_active);
 
 // models/<prompt>.txt, written by tinyseek.deploy.detector_card.
 struct ModelMeta {

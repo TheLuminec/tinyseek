@@ -1,7 +1,7 @@
 // Host driver for tinyseek_core, so the Python tests can check the C++ against the PC
 // pipeline on this machine (tests/test_deploy_core.py builds and runs it).
 //
-//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear] [int16]
+//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear] [int16] [pad=<v>]
 //       writes size*size*3 int8 (or int16, little-endian) HWC and prints
 //       "scale pad_x pad_y resized_w resized_h"
 //   core_cli decode <NHWC file> <grid> <num_classes> <stride> <exponent>
@@ -9,15 +9,19 @@
 //       reads an int8 (or int16) tensor; prints one "x y w h score cls" line per detection
 //   core_cli jpeginfo <file.jpg>
 //       prints "width height components progressive" (or "invalid", exit 1)
+//   core_cli kv <file>
+//       prints the parsed key=value pairs (tinyseek_core parse_kv), one "key=value" per line
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "tinyseek_core/decode.hpp"
 #include "tinyseek_core/jpeg_info.hpp"
+#include "tinyseek_core/kv.hpp"
 #include "tinyseek_core/preprocess.hpp"
 
 static std::vector<uint8_t> read_file(const char *path) {
@@ -38,18 +42,21 @@ static int run_preprocess(char **a) {
     return 2;
   }
   bool bilinear = false, wide = false;
+  tinyseek::NormalizeParams norm;
   for (int i = 6; a[i]; ++i) {
     if (!std::strcmp(a[i], "bilinear")) {
       bilinear = true;
     } else if (!std::strcmp(a[i], "int16")) {
       wide = true;
+    } else if (!std::strncmp(a[i], "pad=", 4)) {
+      norm.pad_value = static_cast<uint8_t>(std::atoi(a[i] + 4));
     } else if (std::strcmp(a[i], "pillow")) {
-      std::fprintf(stderr, "options are pillow|bilinear and int16\n");
+      std::fprintf(stderr, "options are pillow|bilinear, int16 and pad=<v>\n");
       return 2;
     }
   }
   static tinyseek::PreprocessPlan plan;  // 768-byte LUT: keep it off the stack
-  tinyseek::make_plan(plan, w, h, size, exponent, tinyseek::NormalizeParams(),
+  tinyseek::make_plan(plan, w, h, size, exponent, norm,
                       bilinear ? tinyseek::Resample::kBilinear : tinyseek::Resample::kPillow);
   std::vector<uint8_t> scratch(tinyseek::scratch_bytes(plan));
   const size_t n = static_cast<size_t>(size) * size * 3;
@@ -110,8 +117,17 @@ static int run_jpeginfo(char **a) {
   return 0;
 }
 
+static int run_kv(char **a) {
+  std::vector<uint8_t> raw = read_file(a[0]);
+  for (const auto &[k, v] : tinyseek::parse_kv(std::string(raw.begin(), raw.end()))) {
+    std::printf("%s=%s\n", k.c_str(), v.c_str());
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
-  if (argc >= 8 && argc <= 10 && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
+  if (argc >= 8 && argc <= 11 && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
+  if (argc == 3 && !std::strcmp(argv[1], "kv")) return run_kv(argv + 2);
   if ((argc == 12 || argc == 13) && !std::strcmp(argv[1], "decode")) return run_decode(argv + 2);
   if (argc == 3 && !std::strcmp(argv[1], "jpeginfo")) return run_jpeginfo(argv + 2);
   std::fprintf(stderr, "usage: see the comment at the top of core_cli.cpp\n");

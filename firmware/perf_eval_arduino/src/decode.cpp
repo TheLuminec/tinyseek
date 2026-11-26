@@ -67,8 +67,10 @@ void decode_impl(const T *out, const DecodeParams &p, const Letterbox &lb, std::
     const int cls = pk.flat / (H * W);
     const int cell = pk.flat % (H * W);
     const int cy = cell / W, cx = cell % W;
-    const float bw = std::exp(at(cy, cx, nc + 0) * unit);
-    const float bh = std::exp(at(cy, cx, nc + 1) * unit);
+    // log_w/log_h clamped before exp, so a degenerate output cannot give inf (or print it
+    // into the JSON); reference.decode_output clamps the same way.
+    const float bw = std::exp(std::min(at(cy, cx, nc + 0) * unit, kMaxLogWH));
+    const float bh = std::exp(std::min(at(cy, cx, nc + 1) * unit, kMaxLogWH));
     const float ox = cx + at(cy, cx, nc + 2) * unit;
     const float oy = cy + at(cy, cx, nc + 3) * unit;
     // Same operation order as decode() (float32), then Letterbox.inverse.

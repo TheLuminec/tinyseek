@@ -40,9 +40,11 @@ SHARED: dict[str, str] = {
     "src/tinyseek_core/preprocess.hpp": str(CORE / "include/tinyseek_core/preprocess.hpp"),
     "src/tinyseek_core/decode.hpp": str(CORE / "include/tinyseek_core/decode.hpp"),
     "src/tinyseek_core/jpeg_info.hpp": str(CORE / "include/tinyseek_core/jpeg_info.hpp"),
+    "src/tinyseek_core/kv.hpp": str(CORE / "include/tinyseek_core/kv.hpp"),
     "src/preprocess.cpp": str(CORE / "src/preprocess.cpp"),
     "src/decode.cpp": str(CORE / "src/decode.cpp"),
     "src/jpeg_info.cpp": str(CORE / "src/jpeg_info.cpp"),
+    "src/kv.cpp": str(CORE / "src/kv.cpp"),
 }
 
 

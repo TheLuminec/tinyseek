@@ -7,6 +7,11 @@
 //   logic_cli with_prompt <config.txt> <p>  prints the config text with prompt=<p>
 //   logic_cli meta <model.txt>              prints the parsed sidecar as key=value
 //   logic_cli frame                         prints a frame_json and a replay_json line
+//   logic_cli save <exists> <read_ok> <config.txt> <p>  config_for_save: the text, or SKIP
+//   logic_cli recover <config_exists> <tmp_exists>      config_recovery: none|restore|delete
+//   logic_cli action <pending> <current> <replay_active> prompt_action: none|switch|refuse
+//
+// config files are parsed with tinyseek_core's parse_kv, the code the board runs.
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -15,33 +20,38 @@
 #include <vector>
 
 #include "../src/detector_logic.hpp"
+#include "../src/tinyseek_core/kv.hpp"
 
 static std::string read_text(const char *path) {
   std::ifstream f(path, std::ios::binary);
   return std::string(std::istreambuf_iterator<char>(f), {});
 }
 
-// The same parsing as perf::read_kv on the board (platform.cpp): '#' lines skipped,
-// trailing whitespace stripped, split at the first '='.
-static det::KeyValues read_kv(const char *path) {
-  det::KeyValues kv;
-  std::string text = read_text(path), line;
-  for (size_t pos = 0; pos <= text.size(); ++pos) {
-    if (pos == text.size() || text[pos] == '\n') {
-      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-      if (!line.empty() && line[0] != '#') {
-        size_t eq = line.find('=');
-        if (eq != std::string::npos) kv[line.substr(0, eq)] = line.substr(eq + 1);
-      }
-      line.clear();
-    } else {
-      line += text[pos];
-    }
-  }
-  return kv;
-}
+// perf::read_kv on the board is read_text + tinyseek::parse_kv (platform.cpp).
+static det::KeyValues read_kv(const char *path) { return tinyseek::parse_kv(read_text(path)); }
 
 int main(int argc, char **argv) {
+  if (argc == 6 && !std::strcmp(argv[1], "save")) {
+    std::string out;
+    const bool exists = argv[2][0] == '1', read_ok = argv[3][0] == '1';
+    if (!det::config_for_save(exists, read_ok, read_ok ? read_text(argv[4]) : std::string(), argv[5], &out)) {
+      std::printf("SKIP\n");
+    } else {
+      std::fputs(out.c_str(), stdout);
+    }
+    return 0;
+  }
+  if (argc == 4 && !std::strcmp(argv[1], "recover")) {
+    const det::ConfigRecovery r = det::config_recovery(argv[2][0] == '1', argv[3][0] == '1');
+    std::printf("%s\n", r == det::ConfigRecovery::kRestoreTmp ? "restore"
+                       : r == det::ConfigRecovery::kDeleteTmp  ? "delete" : "none");
+    return 0;
+  }
+  if (argc == 5 && !std::strcmp(argv[1], "action")) {
+    const det::PromptAction a = det::prompt_action(argv[2], argv[3], argv[4][0] == '1');
+    std::printf("%s\n", a == det::PromptAction::kSwitch ? "switch" : a == det::PromptAction::kRefuseReplay ? "refuse" : "none");
+    return 0;
+  }
   if (argc == 3 && !std::strcmp(argv[1], "settings")) {
     std::vector<std::string> warnings;
     det::Settings s = det::parse_settings(read_kv(argv[2]), warnings);

@@ -38,12 +38,16 @@ std::string sdk_settings();
 
 // Whole file into a PSRAM buffer (caller frees with free_buffer). nullptr on failure.
 uint8_t *read_file(const std::string &path, size_t *size);
+// Whole (small) text file into `text`; an empty file is a success. False if it cannot be
+// opened or read.
+bool read_text(const std::string &path, std::string *text);
 bool write_file(const std::string &path, const void *data, size_t size);
 bool append_line(const std::string &path, const std::string &line);
 bool file_exists(const std::string &path);
 bool make_dir(const std::string &path);
 // File names in `dir` ending in `suffix` (case-insensitive), sorted.
 std::vector<std::string> list_dir(const std::string &dir, const char *suffix);
+// Trimmed lines, without empty and '#' lines or a leading UTF-8 BOM (tinyseek_core/kv.hpp).
 std::vector<std::string> read_lines(const std::string &path);
 
 // key=value file, as written by tinyseek.deploy.layout.write_kv. Missing file -> empty.

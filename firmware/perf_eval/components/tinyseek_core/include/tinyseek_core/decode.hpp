@@ -24,6 +24,11 @@ struct Detection {
   int cls;
 };
 
+// Upper bound on log_w/log_h (in cells) before exp: e^16 cells is far beyond any frame, and
+// a real model's outputs never reach it, so the clamp only removes inf from degenerate
+// outputs. tinyseek.deploy.reference.MAX_LOG_WH is the same value.
+constexpr float kMaxLogWH = 16.0f;
+
 struct DecodeParams {
   int grid_h = 0, grid_w = 0;
   int num_classes = 1;

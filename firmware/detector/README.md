@@ -105,8 +105,19 @@ card.
 ### `config.txt` keys
 
 Missing keys take the default. The firmware prints a warning for unknown keys and invalid
-values, then uses the default. The board itself rewrites the `prompt=` line when you switch
-prompts.
+values, then uses the default.
+
+- **Format:** spaces and tabs around keys and values are ignored (`prompt = cup` works).
+  A line whose first non-blank character is `#` is a comment. A UTF-8 byte-order mark, as
+  Windows Notepad may add, is ignored.
+- **Repeated keys:** if a key appears twice, the later line wins. Un-commenting the
+  footer's `#   wifi=sta` therefore overrides the staged `wifi=off` above it.
+- **Prompt switches:** when you switch prompts, the board rewrites the prompt line in
+  `config.txt` and drops any duplicate prompt lines.
+  - It writes `config.tmp` first, then swaps it in.
+  - If that swap is interrupted, the next boot restores `config.txt` from `config.tmp`.
+  - If `config.txt` exists but cannot be read, the board does not save the new prompt and
+    warns, so your other settings are never lost.
 
 | Key | Default | Values |
 | --- | --- | --- |
@@ -175,13 +186,18 @@ measurements.
 
 On a switch the board unloads the old model, loads the new one (about 1 s from the card)
 and saves `prompt=` to `config.txt`. If the new model does not load, the old one is loaded
-again.
+again. While a replay is running, switches are refused (its results file holds one model),
+including a request that arrived just before the replay started.
 
 ## 4. The web page (optional)
 
 Set `wifi=sta` with `wifi_ssid`/`wifi_password`, or `wifi=ap` with `ap_password`, on the
 card. The `wifi` line on Serial gives the address. Open `http://<ip>/`; in AP mode that is
 usually `http://192.168.4.1/`.
+
+In STA mode the server starts even if the network has not answered within 20 s. The core
+keeps reconnecting, and `"connected"` in the `wifi` line and in `/status.json` shows when it
+is up. Type `status` on Serial to get the address once connected.
 
 - **What the page shows:**
   - the latest frame, with the boxes drawn by the browser (green at or above the detect
@@ -219,9 +235,11 @@ the `mem` lines `after_wifi` and `after_web` give the real numbers on the first 
 
 - **With Wi-Fi on, keep `internal_kb=0`, or at most about 48.** With 100, the heap left
   for Wi-Fi would be near zero.
-- **The order is chosen for this.** The firmware starts Wi-Fi before it loads the model,
-  then clamps `internal_kb` to the largest free internal block minus 24 KB and logs a
-  warning. A too-large value therefore costs speed, not a crash or a failed load.
+- **The order is chosen for this.** The firmware starts Wi-Fi, the camera, the web server
+  and (with `pipeline=1`) the capture task before it loads the model. It then clamps
+  `internal_kb` to the largest free internal block minus 24 KB and logs a warning; with
+  `internal_kb=0` there is nothing to clamp and no warning. A too-large value therefore
+  costs speed, not a crash or a failed load.
 
 ## 5. Replay: deployed accuracy on the held-out photos
 

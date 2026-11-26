@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -136,6 +137,8 @@ struct App {
   SemaphoreHandle_t mu = nullptr;
   std::string state = "starting", message, pending_prompt, model_json = "null", last_frame = "null";
   std::string shown_prompt;  // g.model.prompt as the web task may read it
+  std::string settings_cache = "{}";  // settings_json(g.s), rebuilt whenever g.s changes
+  std::atomic<bool> replay_busy{false};  // g.replay.active, for the web task
 };
 
 App g;
@@ -211,7 +214,7 @@ bool load_model(const std::string &prompt, std::string *err) {
   // free block is that large (perf_eval README): clamp to what is free now.
   m.internal_kb = g.s.internal_kb;
   const int largest_kb = static_cast<int>(perf::mem_snapshot().internal_largest / 1024);
-  if (m.internal_kb > largest_kb - kInternalReserveKb) {
+  if (m.internal_kb > 0 && m.internal_kb > largest_kb - kInternalReserveKb) {
     const int clamped = largest_kb > kInternalReserveKb ? largest_kb - kInternalReserveKb : 0;
     emit_msg("warning", "internal_kb=" + std::to_string(m.internal_kb) + " does not fit (largest free internal block " +
                             std::to_string(largest_kb) + " KB); using " + std::to_string(clamped));
@@ -437,6 +440,7 @@ void start_replay() {
   }
   write_run_txt();
   r.active = r.started = true;
+  g.replay_busy = true;
   r.start_us = perf::now_us();
   emit("{\"type\":\"replay_start\",\"files\":" + std::to_string(r.files.size()) + ",\"results\":\"" +
        det::json_escape(r.dir) + "\"}");
@@ -447,6 +451,7 @@ void start_replay() {
 void finish_replay() {
   Replay &r = g.replay;
   r.active = false;
+  g.replay_busy = false;
   const double secs = (perf::now_us() - r.start_us) / 1e6;
   auto stat = [](const char *name, const det::StageStats &st) {
     char buf[160];
@@ -566,7 +571,7 @@ std::string request_prompt(const std::string &typed) {
   if (!det::valid_prompt(name)) {
     return prompt_reply(false, name, "'" + typed + "' is not a prompt name (letters, digits and _ only)");
   }
-  if (g.replay.active) return prompt_reply(false, name, "a replay is running; switch after it finishes");
+  if (g.replay_busy) return prompt_reply(false, name, "a replay is running; switch after it finishes");
   if (!perf::file_exists(model_path(name, ".espdl"))) {
     return prompt_reply(false, name, "no model for '" + name + "' on the card");
   }
@@ -576,14 +581,20 @@ std::string request_prompt(const std::string &typed) {
   return prompt_reply(true, name, "switching to '" + name + "'");
 }
 
+std::string config_path() { return std::string(kRoot) + "/config.txt"; }
+std::string config_tmp_path() { return std::string(kRoot) + "/config.tmp"; }
+
 void persist_prompt(const std::string &prompt) {
-  const std::string cfg = std::string(kRoot) + "/config.txt", tmp = std::string(kRoot) + "/config.tmp";
-  size_t n = 0;
-  uint8_t *buf = perf::read_file(cfg, &n);
-  std::string text = buf ? std::string(reinterpret_cast<const char *>(buf), n) : std::string();
-  perf::free_buffer(buf);
-  const std::string out = det::with_prompt(text, prompt);
-  // Write a copy, then swap it in, so a reset mid-write cannot leave a truncated config.
+  const std::string cfg = config_path(), tmp = config_tmp_path();
+  const bool exists = perf::file_exists(cfg);
+  std::string text, out;
+  const bool read_ok = exists && perf::read_text(cfg, &text);
+  if (!det::config_for_save(exists, read_ok, text, prompt, &out)) {
+    emit_msg("warning", "config.txt could not be read; prompt=" + prompt + " not saved (the file is unchanged)");
+    return;
+  }
+  // Write a complete copy, then swap it in (FAT cannot rename over a file, so the old one
+  // is removed first). An interruption is repaired at the next boot (recover_config).
   bool ok = perf::write_file(tmp, out.data(), out.size());
   if (ok) {
     remove(cfg.c_str());
@@ -592,7 +603,35 @@ void persist_prompt(const std::string &prompt) {
   if (!ok) emit_msg("warning", "could not save prompt=" + prompt + " to config.txt");
 }
 
+// Repairs an interrupted persist_prompt before config.txt is read.
+void recover_config() {
+  const std::string cfg = config_path(), tmp = config_tmp_path();
+  switch (det::config_recovery(perf::file_exists(cfg), perf::file_exists(tmp))) {
+    case det::ConfigRecovery::kRestoreTmp:
+      if (rename(tmp.c_str(), cfg.c_str()) == 0) emit_msg("warning", "config.txt was missing; restored it from config.tmp");
+      else emit_msg("error", "config.txt is missing and config.tmp could not be renamed");
+      break;
+    case det::ConfigRecovery::kDeleteTmp:
+      remove(tmp.c_str());  // left over from a save that stopped before replacing config.txt
+      break;
+    case det::ConfigRecovery::kNone:
+      break;
+  }
+}
+
+void update_settings_cache() {
+  const std::string js = det::settings_json(g.s);
+  xSemaphoreTake(g.mu, portMAX_DELAY);
+  g.settings_cache = js;
+  xSemaphoreGive(g.mu);
+}
+
 void switch_prompt(const std::string &name) {
+  if (g.replay.active) {  // also refused in request_prompt; this covers a request queued before the replay began
+    emit("{\"type\":\"prompt\",\"ok\":false,\"prompt\":\"" + det::json_escape(name) +
+         "\",\"msg\":\"a replay is running; switch after it finishes\"}");
+    return;
+  }
   const std::string previous = g.model.prompt;
   set_state("switching", name);
   set_leds(false);
@@ -600,7 +639,10 @@ void switch_prompt(const std::string &name) {
   emit_mem("after_unload");
   std::string err;
   if (load_model(name, &err)) {
-    g.s.prompt = name;
+    xSemaphoreTake(g.mu, portMAX_DELAY);
+    g.s.prompt = name;  // the web task reads settings only through settings_cache
+    xSemaphoreGive(g.mu);
+    update_settings_cache();
     persist_prompt(name);
     emit("{\"type\":\"prompt\",\"ok\":true,\"prompt\":\"" + det::json_escape(name) + "\"}");
     set_state("running", "");
@@ -623,10 +665,10 @@ std::string status_json() {
   xSemaphoreTake(g.mu, portMAX_DELAY);
   std::string o = "{\"state\":\"" + det::json_escape(g.state) + "\",\"message\":\"" + det::json_escape(g.message) +
                   "\",\"prompt\":\"" + det::json_escape(g.shown_prompt) + "\",\"model\":" + g.model_json +
-                  ",\"last\":" + g.last_frame;
+                  ",\"last\":" + g.last_frame + ",\"settings\":" + g.settings_cache;
   xSemaphoreGive(g.mu);
   o += ",\"available\":" + det::json_string_array(available_prompts());
-  o += ",\"settings\":" + det::settings_json(g.s) + ",\"mem\":" + mem_json();
+  o += ",\"mem\":" + mem_json();
   o += ",\"wifi\":" + (g.wifi_ok ? det::wifi_status_json() : g.wifi_info) + "}";
   return o;
 }
@@ -690,14 +732,16 @@ void detector_setup() {
   if (!perf::mount_sd_card()) halt("no SD card (FAT32, inserted before power-on?)");
   if (!perf::file_exists(kRoot)) halt("/sdcard/tinyseek missing: copy the staged tinyseek folder to the card root");
 
+  recover_config();
   std::vector<std::string> warnings;
-  g.s = det::parse_settings(perf::read_kv(std::string(kRoot) + "/config.txt"), warnings);
+  g.s = det::parse_settings(perf::read_kv(config_path()), warnings);
   g.decoder = g.s.esp_new_jpeg ? perf::JpegDecoder::kEspNewJpeg : perf::JpegDecoder::kTjpgd;
   if (!perf::jpeg_decoder_available(g.decoder)) {
     warnings.push_back(std::string(perf::jpeg_decoder_label(g.decoder)) + " is not in this build; using tjpgd");
     g.decoder = perf::JpegDecoder::kTjpgd;
     g.s.esp_new_jpeg = false;
   }
+  update_settings_cache();
   emit("{\"type\":\"config\",\"settings\":" + det::settings_json(g.s) + ",\"jpeg_decoder\":\"" +
        perf::jpeg_decoder_label(g.decoder) + "\",\"warnings\":" + det::json_string_array(warnings) + "}");
 
@@ -733,19 +777,8 @@ void detector_setup() {
     }
   }
 
-  if (g.s.prompt.empty()) {
-    set_state("no_model", "no prompt in config.txt");
-    emit_msg("error", "config.txt has no prompt=; type: prompt <name>");
-  } else {
-    std::string err;
-    if (load_model(g.s.prompt, &err)) {
-      set_state("running", "");
-    } else {
-      unload_model();
-      set_state("no_model", err);
-      emit_msg("error", err + "; available: " + det::json_string_array(available_prompts()));
-    }
-  }
+  // The web server and the capture task before the model, so their stacks (internal RAM)
+  // are already taken when internal_kb is clamped to what is left.
   if (g.wifi_ok) {
     det::WebHooks hooks;
     hooks.status_json = status_json;
@@ -761,6 +794,20 @@ void detector_setup() {
   if (g.s.source == det::Source::kCamera && g.s.pipeline && !start_producer()) {
     halt("cannot start the capture task");
   }
+
+  if (g.s.prompt.empty()) {
+    set_state("no_model", "no prompt in config.txt");
+    emit_msg("error", "config.txt has no prompt=; type: prompt <name>");
+  } else {
+    std::string err;
+    if (load_model(g.s.prompt, &err)) {
+      set_state("running", "");
+    } else {
+      unload_model();
+      set_state("no_model", err);
+      emit_msg("error", err + "; available: " + det::json_string_array(available_prompts()));
+    }
+  }
   if (g.s.source == det::Source::kReplay && g.model.net) start_replay();
 }
 
@@ -770,7 +817,17 @@ void detector_loop() {
   xSemaphoreTake(g.mu, portMAX_DELAY);
   pending.swap(g.pending_prompt);
   xSemaphoreGive(g.mu);
-  if (!pending.empty() && pending != g.model.prompt) switch_prompt(pending);
+  switch (det::prompt_action(pending, g.model.prompt, g.replay.active)) {
+    case det::PromptAction::kSwitch:
+      switch_prompt(pending);
+      break;
+    case det::PromptAction::kRefuseReplay:
+      emit("{\"type\":\"prompt\",\"ok\":false,\"prompt\":\"" + det::json_escape(pending) +
+           "\",\"msg\":\"a replay is running; switch after it finishes\"}");
+      break;
+    case det::PromptAction::kNone:
+      break;
+  }
 
   const bool replay = g.s.source == det::Source::kReplay;
   if (replay && !g.replay.active) {

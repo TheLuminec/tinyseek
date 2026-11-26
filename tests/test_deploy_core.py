@@ -280,3 +280,62 @@ def test_int16_parity_with_simulated_w16a16_graph(cli, tmp_path):
             lb = Letterbox(*json.loads((exp_dir / f"{case['id']}_float.json").read_text())["letterbox"])
             ref = decode_output(out, m["output_exponent"], lb)
             assert_same_dets(ref, run_decode(cli, out, m["output_exponent"], lb, tmp_path))
+
+
+# --- review fixes (2026-11-26) -----------------------------------------------------------------
+
+def run_kv(cli: Path, path: Path) -> dict[str, str]:
+    out = subprocess.run([str(cli), "kv", str(path)], capture_output=True, text=True, check=True).stdout
+    return dict(line.split("=", 1) for line in out.splitlines())
+
+
+def test_kv_trims_keys_and_later_lines_win(cli, tmp_path):
+    """#1, #7: the board's key=value parser (tinyseek_core parse_kv, used by perf::read_kv)
+    and the PC's layout.read_kv give the same map."""
+    from tinyseek.deploy.layout import read_kv
+
+    path = tmp_path / "config.txt"
+    path.write_bytes(b"\xef\xbb\xbfprompt=backpack\r\nwifi=off\r\n   wifi=sta\r\n\twifi_ssid = my net \r\n"
+                     b"  # wifi_password=commented\r\nnoequals\r\n=nokey\r\nurl=http://x/?a=b\r\n\r\n")
+    want = {"prompt": "backpack", "wifi": "sta", "wifi_ssid": "my net", "url": "http://x/?a=b"}
+    assert run_kv(cli, path) == want
+    assert read_kv(path) == want
+
+
+@pytest.mark.parametrize("resample", ["pillow", "bilinear"])
+@pytest.mark.parametrize("pad", [0, 255])
+def test_pad_value_from_the_sidecar_is_used(cli, tmp_path, resample, pad):
+    """#6: the plan carries the model's pad value; 114 stays the byte-identical default."""
+    rng = np.random.default_rng(pad)
+    rgb = rng.integers(0, 256, (300, 400, 3), dtype=np.uint8)
+    default, _ = run_preprocess(cli, Image.fromarray(rgb), 192, -6, tmp_path, resample)
+    assert np.array_equal(default, preprocess_rgb(rgb, 192, -6, resample)[0])
+    # pad=114 given explicitly is the default output
+    r = subprocess.run([str(cli), "preprocess", str(tmp_path / "in.rgb"), "400", "300", "192", "-6",
+                        str(tmp_path / "out.bin"), resample, "pad=114"], check=True, capture_output=True)
+    assert r.returncode == 0 and np.array_equal(np.fromfile(tmp_path / "out.bin", np.int8).reshape(192, 192, 3), default)
+    subprocess.run([str(cli), "preprocess", str(tmp_path / "in.rgb"), "400", "300", "192", "-6",
+                    str(tmp_path / "out.bin"), resample, f"pad={pad}"], check=True, capture_output=True)
+    padded = np.fromfile(tmp_path / "out.bin", np.int8).reshape(192, 192, 3)
+    ref, _ = preprocess_rgb(rgb, 192, -6, resample, pad_value=pad)
+    assert np.array_equal(padded, ref)
+    assert not np.array_equal(padded, default) and np.array_equal(padded[24:168], default[24:168])
+
+
+def test_decode_clamps_degenerate_box_sizes(cli, tmp_path):
+    """#8: with a large output exponent, exp(log_w) would overflow to inf; board and PC
+    both clamp log_w/log_h at MAX_LOG_WH and give the same finite boxes."""
+    from tinyseek.deploy.reference import MAX_LOG_WH
+
+    _, lb = model_input(Image.new("RGB", (800, 600)), 192, -6)
+    q = np.full((24, 24, 5), -128, np.int8)
+    q[5, 7] = [127, 127, 100, 0, 0]  # exponent 3: logit 1016, log_w 1016, log_h 800
+    q[15, 15] = [127, 1, -5, 0, 0]   # an ordinary box (log_w 8, log_h -40)
+    ref = decode_output(q, 3, lb)
+    got = run_decode(cli, q, 3, lb, tmp_path)
+    assert len(ref) == len(got) == 2
+    assert all(np.isfinite([d.x, d.y, d.w, d.h]).all() for d in ref + got)
+    assert max(d.w for d in ref) == pytest.approx(np.float32(np.exp(np.float32(MAX_LOG_WH))) * 8 / lb.scale, rel=1e-5)
+    for a, b in zip(sorted(ref, key=lambda d: d.w), sorted(got, key=lambda d: d.w)):
+        assert abs(a.score - b.score) < 1e-6
+        assert np.allclose([a.x, a.y, a.w, a.h], [b.x, b.y, b.w, b.h], rtol=1e-6, atol=1e-3)

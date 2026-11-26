@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "tinyseek_core/kv.hpp"
+
 namespace det {
 
 namespace {
@@ -205,18 +207,25 @@ bool valid_prompt(const std::string &name) {
 }
 
 std::string with_prompt(const std::string &text, const std::string &prompt) {
+  // A line is a prompt line when its key, read as tinyseek::parse_kv reads it (trimmed,
+  // after a leading BOM on the first line), is "prompt". The first one is replaced and any
+  // others dropped, so the file cannot hold a second prompt= that wins on the next boot.
   std::string out;
   bool replaced = false;
   size_t pos = 0;
+  if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+    out += text.substr(0, 3);
+    pos = 3;
+  }
   while (pos < text.size()) {
     size_t end = text.find('\n', pos);
     std::string line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
     pos = end == std::string::npos ? text.size() : end + 1;
-    std::string key = line;
-    while (!key.empty() && (key.back() == '\r')) key.pop_back();
-    size_t lead = key.find_first_not_of(" \t");
-    if (!replaced && lead != std::string::npos && key.compare(lead, 7, "prompt=") == 0) {
-      out += "prompt=" + prompt + "\n";
+    const std::string t = tinyseek::trim(line);
+    const size_t eq = t.find('=');
+    const bool is_prompt = !t.empty() && t[0] != '#' && eq != std::string::npos && tinyseek::trim(t.substr(0, eq)) == "prompt";
+    if (is_prompt) {
+      if (!replaced) out += "prompt=" + prompt + "\n";
       replaced = true;
       continue;
     }
@@ -224,6 +233,26 @@ std::string with_prompt(const std::string &text, const std::string &prompt) {
   }
   if (!replaced) out += "prompt=" + prompt + "\n";
   return out;
+}
+
+bool config_for_save(bool exists, bool read_ok, const std::string &text, const std::string &prompt,
+                     std::string *out) {
+  if (exists && !read_ok) return false;  // never replace a config we could not read
+  *out = with_prompt(exists ? text : std::string(), prompt);
+  return true;
+}
+
+ConfigRecovery config_recovery(bool config_exists, bool tmp_exists) {
+  if (!tmp_exists) return ConfigRecovery::kNone;
+  // Saving writes config.tmp completely, removes config.txt, then renames. With both
+  // present the save stopped before the remove: config.txt is intact, the copy is stale or
+  // partial. With only the copy, the save stopped between remove and rename.
+  return config_exists ? ConfigRecovery::kDeleteTmp : ConfigRecovery::kRestoreTmp;
+}
+
+PromptAction prompt_action(const std::string &pending, const std::string &current, bool replay_active) {
+  if (pending.empty() || pending == current) return PromptAction::kNone;
+  return replay_active ? PromptAction::kRefuseReplay : PromptAction::kSwitch;
 }
 
 ModelMeta parse_model_meta(const KeyValues &kv) {

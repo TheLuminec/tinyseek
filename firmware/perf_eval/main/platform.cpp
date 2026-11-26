@@ -16,6 +16,7 @@
 #include "esp_idf_version.h"
 
 #include "sdkconfig.h"
+#include "tinyseek_core/kv.hpp"
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -197,27 +198,27 @@ std::vector<std::string> list_dir(const std::string &dir, const char *suffix) {
   return names;
 }
 
-std::vector<std::string> read_lines(const std::string &path) {
-  std::vector<std::string> lines;
-  FILE *f = fopen(path.c_str(), "r");
-  if (!f) return lines;
-  char buf[256];
-  while (fgets(buf, sizeof(buf), f)) {
-    std::string s = buf;
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
-    if (!s.empty() && s[0] != '#') lines.push_back(s);
-  }
+bool read_text(const std::string &path, std::string *text) {
+  FILE *f = fopen(path.c_str(), "rb");
+  if (!f) return false;
+  text->clear();
+  char buf[512];
+  bool ok = true;
+  for (size_t n; (n = fread(buf, 1, sizeof(buf), f)) > 0;) text->append(buf, n);
+  if (ferror(f)) ok = false;
   fclose(f);
-  return lines;
+  return ok;
+}
+
+// Line and key=value rules live in tinyseek_core (kv.cpp) so the host tests run them.
+std::vector<std::string> read_lines(const std::string &path) {
+  std::string text;
+  return read_text(path, &text) ? tinyseek::text_lines(text) : std::vector<std::string>();
 }
 
 std::map<std::string, std::string> read_kv(const std::string &path) {
-  std::map<std::string, std::string> kv;
-  for (const std::string &line : read_lines(path)) {
-    size_t eq = line.find('=');
-    if (eq != std::string::npos) kv[line.substr(0, eq)] = line.substr(eq + 1);
-  }
-  return kv;
+  std::string text;
+  return read_text(path, &text) ? tinyseek::parse_kv(text) : std::map<std::string, std::string>();
 }
 
 int kv_int(const std::map<std::string, std::string> &kv, const char *key, int fallback) {

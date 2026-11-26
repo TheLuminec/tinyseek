@@ -43,10 +43,13 @@ def write_kv(path: Path, values: dict) -> None:
 
 
 def read_kv(path: Path) -> dict[str, str]:
+    """The firmware's rules (tinyseek_core kv.cpp): BOM dropped, lines and keys/values trimmed,
+    '#' lines skipped, a repeated key keeps its last value."""
     out = {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            out[k.strip()] = v.strip()
+            if k.strip():
+                out[k.strip()] = v.strip()
     return out
