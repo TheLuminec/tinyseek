@@ -1,0 +1,18 @@
+# The far_v2 scenes drawn by a second generator, Z-Image Turbo (6B, int8, on the same ComfyUI
+# server; settings from ComfyUI's image_z_image_turbo_int8 template: 8 steps, cfg 1,
+# res_multistep, AuraFlow shift 3). Different generators carry different biases, so mixing them
+# may help more than another 1,000 Qwen images did (far_v1 -> far_v1 + far_v2: +0.02 AP).
+base: generate_comfy_far_v2.yaml
+seed: 3
+synth_set: zimage_turbo_far_v1
+workflow: configs/comfy/z_image_turbo.json
+model: z-image-turbo (int8 weights on the server)
+# Licence from the Hugging Face cards of Tongyi-MAI/Z-Image-Turbo and its ComfyUI repack
+# Comfy-Org/z_image_turbo (checked 2026-11-26): Apache-2.0.
+model_licence: apache-2.0
+workflow_inputs:
+  text: [text, text]
+  seed: [sample, seed]
+  width: [latent, width]
+  height: [latent, height]
+output_node: image
