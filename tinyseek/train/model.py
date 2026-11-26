@@ -42,13 +42,20 @@ class TinyCenterNet(nn.Module):
         head_channels: int = 48,
         output_stride: int = 8,
         pretrained: bool = True,
+        backbone_act: str = "relu6",
     ) -> None:
         super().__init__()
         if output_stride != 8:
             raise ValueError("only output_stride=8 is implemented")
+        if backbone_act not in ("relu6", "relu"):
+            raise ValueError(f"backbone_act must be relu6 or relu, got {backbone_act!r}")
         name = f"mobilenetv2_{round(width_mult * 100):03d}"
+        # ReLU instead of the pretrained ReLU6: esp-ppq's layerwise equalization only works across
+        # ReLU, and the backbone's depthwise convs have per-channel weight ranges up to 326x apart,
+        # which per-tensor power-of-two int8 cannot hold (QAT report, 2026-11-26).
+        extra = {"act_layer": nn.ReLU} if backbone_act == "relu" else {}
         self.backbone = timm.create_model(
-            name, pretrained=pretrained, features_only=True, out_indices=tuple(_FEATURE_STRIDES)
+            name, pretrained=pretrained, features_only=True, out_indices=tuple(_FEATURE_STRIDES), **extra
         )
         chans = self.backbone.feature_info.channels()
         self.lateral = nn.ModuleList(conv_bn_relu(c, head_channels) for c in chans)
@@ -89,4 +96,5 @@ def build_model(model_cfg: dict, num_classes: int = 1) -> TinyCenterNet:
         head_channels=model_cfg.get("head_channels", 48),
         output_stride=model_cfg.get("output_stride", 8),
         pretrained=model_cfg.get("pretrained", True),
+        backbone_act=model_cfg.get("backbone_act", "relu6"),
     )
