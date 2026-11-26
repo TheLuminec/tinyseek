@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>  // strcasecmp
 
 #include <cstdarg>
 
@@ -190,7 +191,8 @@ std::vector<std::string> list_dir(const std::string &dir, const char *suffix) {
   const size_t sl = strlen(suffix);
   for (struct dirent *e = readdir(d); e; e = readdir(d)) {
     std::string n = e->d_name;
-    if (n.size() > sl && n.compare(n.size() - sl, sl, suffix) == 0) names.push_back(n);
+    // Case-insensitive: FAT may report an 8.3 name in upper case ("00001.JPG").
+    if (n.size() > sl && strcasecmp(n.c_str() + n.size() - sl, suffix) == 0) names.push_back(n);
   }
   closedir(d);
   std::sort(names.begin(), names.end());

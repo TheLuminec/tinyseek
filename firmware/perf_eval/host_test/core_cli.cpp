@@ -1,7 +1,7 @@
 // Host driver for tinyseek_core, so the Python tests can check the C++ against the PC
 // pipeline on this machine (tests/test_deploy_core.py builds and runs it).
 //
-//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin>
+//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear]
 //       writes size*size*3 int8 (HWC) and prints "scale pad_x pad_y resized_w resized_h"
 //   core_cli decode <int8 NHWC file> <grid> <num_classes> <stride> <exponent>
 //                   <scale> <pad_x> <pad_y> <score_threshold> <max_detections>
@@ -36,8 +36,14 @@ static int run_preprocess(char **a) {
     std::fprintf(stderr, "expected %d bytes, got %zu\n", w * h * 3, rgb.size());
     return 2;
   }
+  const bool bilinear = a[6] && !std::strcmp(a[6], "bilinear");
+  if (a[6] && !bilinear && std::strcmp(a[6], "pillow")) {
+    std::fprintf(stderr, "resample must be pillow or bilinear\n");
+    return 2;
+  }
   static tinyseek::PreprocessPlan plan;  // 768-byte LUT: keep it off the stack
-  tinyseek::make_plan(plan, w, h, size, exponent);
+  tinyseek::make_plan(plan, w, h, size, exponent, tinyseek::NormalizeParams(),
+                      bilinear ? tinyseek::Resample::kBilinear : tinyseek::Resample::kPillow);
   std::vector<uint8_t> scratch(tinyseek::scratch_bytes(plan));
   std::vector<int8_t> out(static_cast<size_t>(size) * size * 3);
   tinyseek::preprocess(plan, rgb.data(), scratch.data(), out.data());
@@ -83,7 +89,7 @@ static int run_jpeginfo(char **a) {
 }
 
 int main(int argc, char **argv) {
-  if (argc == 8 && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
+  if ((argc == 8 || argc == 9) && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
   if (argc == 12 && !std::strcmp(argv[1], "decode")) return run_decode(argv + 2);
   if (argc == 3 && !std::strcmp(argv[1], "jpeginfo")) return run_jpeginfo(argv + 2);
   std::fprintf(stderr, "usage: see the comment at the top of core_cli.cpp\n");

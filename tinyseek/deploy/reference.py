@@ -10,6 +10,7 @@ quantization step added (power-of-two scale, ROUND_HALF_UP, int8 saturation).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -50,6 +51,154 @@ def model_input(image: Image.Image, size: int, exponent: int) -> tuple[np.ndarra
     canvas, lb = letterbox(image.convert("RGB"), size)
     chw = to_tensor(canvas).numpy()
     return quantize(chw.transpose(1, 2, 0), exponent), lb
+
+
+# --- What the detector firmware feeds the model, per speed setting --------------------------
+
+RESAMPLES = ("pillow", "bilinear")
+DECODERS = ("tjpgd", "pillow")
+SCALE_NAMES = {"full": 0, "half": 1, "quarter": 2, "eighth": 3}
+
+
+@dataclass(frozen=True)
+class BoardMode:
+    """One preprocessing setting of firmware/detector (config.txt ``decode_scale``, ``resize``).
+
+    decode_scale: the camera JPEG is decoded at 1/2**decode_scale (TJpgDec's built-in
+        descaling: each output pixel is the truncated mean of a 2**s x 2**s block).
+    resample: "pillow" is the exact PC letterbox (Pillow BILINEAR), "bilinear" the fast
+        2-tap interpolation (tinyseek_core Resample::kBilinear).
+    decoder: "tjpgd" is the board's own decoder, bit-exact (needs a C compiler, see
+        tinyseek.deploy.tjpgd); "pillow" decodes with Pillow (libjpeg) and applies the
+        same truncating box average, an approximation (about 1 uint8 step mean absolute
+        difference at full scale on the camera photos).
+    """
+
+    decode_scale: int = 0
+    resample: str = "pillow"
+    decoder: str = "tjpgd"
+
+    def __post_init__(self) -> None:
+        if self.decode_scale not in (0, 1, 2, 3):
+            raise ValueError(f"decode_scale must be 0..3, got {self.decode_scale}")
+        if self.resample not in RESAMPLES:
+            raise ValueError(f"resample must be one of {RESAMPLES}, got {self.resample!r}")
+        if self.decoder not in DECODERS:
+            raise ValueError(f"decoder must be one of {DECODERS}, got {self.decoder!r}")
+
+    @classmethod
+    def parse(cls, mode: BoardMode | str) -> BoardMode:
+        """"full", "half", "quarter", "eighth", optionally with "_bilinear" (e.g.
+        "half_bilinear") and/or "_pillowdecode"; "full" is what perf_eval and the detector's
+        defaults run."""
+        if isinstance(mode, BoardMode):
+            return mode
+        parts = mode.lower().split("_")
+        if parts[0] not in SCALE_NAMES:
+            raise ValueError(f"unknown board mode {mode!r}; start with one of {sorted(SCALE_NAMES)}")
+        kw: dict = {"decode_scale": SCALE_NAMES[parts[0]]}
+        for p in parts[1:]:
+            if p in RESAMPLES:
+                kw["resample"] = p
+            elif p == "pillowdecode":
+                kw["decoder"] = "pillow"
+            else:
+                raise ValueError(f"unknown part {p!r} in board mode {mode!r}")
+        return cls(**kw)
+
+    @property
+    def name(self) -> str:
+        scale = {v: k for k, v in SCALE_NAMES.items()}[self.decode_scale]
+        return scale + ("_bilinear" if self.resample == "bilinear" else "") + (
+            "_pillowdecode" if self.decoder == "pillow" else "")
+
+
+BOARD_MODES = tuple(f"{s}{r}" for s in ("full", "half", "quarter") for r in ("", "_bilinear"))
+
+
+def box_average(rgb: np.ndarray, factor: int) -> np.ndarray:
+    """TJpgDec's descaling: truncated mean of each factor x factor block; partial blocks at
+    the right and bottom edges are dropped (the output is floor(W/f) x floor(H/f))."""
+    if factor == 1:
+        return rgb
+    h, w = rgb.shape[0] // factor, rgb.shape[1] // factor
+    blocks = rgb[: h * factor, : w * factor].astype(np.uint32).reshape(h, factor, w, factor, 3)
+    return (blocks.sum(axis=(1, 3)) // (factor * factor)).astype(np.uint8)
+
+
+def board_rgb(jpeg: Path | str | bytes, decode_scale: int = 0, decoder: str = "tjpgd") -> np.ndarray:
+    """The decoded frame the board preprocesses: (H >> s, W >> s, 3) uint8 RGB."""
+    if decoder == "tjpgd":
+        from tinyseek.deploy import tjpgd
+
+        return tjpgd.decode(jpeg, decode_scale)
+    import io
+
+    src = io.BytesIO(jpeg) if isinstance(jpeg, bytes) else jpeg
+    rgb = np.asarray(Image.open(src).convert("RGB"), np.uint8)
+    return box_average(rgb, 1 << decode_scale)
+
+
+def bilinear2_axis(in_size: int, out_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per output index: first source index and the next one's weight out of 256
+    (tinyseek_core bilinear2_axis)."""
+    i = np.arange(out_size, dtype=np.int64)
+    num = (2 * i + 1) * in_size - out_size
+    p = np.where(num > 0, (num * 256) // (2 * out_size), 0)
+    i0, f = p >> 8, p & 255
+    past = i0 >= in_size - 1
+    return np.where(past, in_size - 1, i0), np.where(past, 0, f)
+
+
+def bilinear_resize(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    """The firmware's fast resample (Resample::kBilinear), bit-exact: 8-bit fixed-point
+    weights, uint16 horizontal pass, one rounding at the end."""
+    h, w = rgb.shape[:2]
+    x0, fx = bilinear2_axis(w, out_w)
+    y0, fy = bilinear2_axis(h, out_h)
+    x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+    src = rgb.astype(np.int64)
+    fx3 = fx[None, :, None]
+    horiz = src[:, x0] * (256 - fx3) + src[:, x1] * fx3  # (h, out_w, 3), at most 65280
+    fy3 = fy[:, None, None]
+    v = horiz[y0] * (256 - fy3) + horiz[y1] * fy3
+    return ((v + 32768) >> 16).astype(np.uint8)
+
+
+def preprocess_rgb(rgb: np.ndarray, size: int, exponent: int, resample: str = "pillow") -> tuple[np.ndarray, Letterbox]:
+    """Decoded frame -> (size, size, 3) int8 HWC input and its letterbox (in rgb's pixels)."""
+    if resample == "pillow":
+        return model_input(Image.fromarray(rgb), size, exponent)
+    if resample != "bilinear":
+        raise ValueError(f"resample must be one of {RESAMPLES}, got {resample!r}")
+    h, w = rgb.shape[:2]
+    scale = size / max(w, h)
+    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+    pad_x, pad_y = round((size - nw) * 0.5), round((size - nh) * 0.5)
+    canvas = np.full((size, size, 3), 114, np.uint8)
+    canvas[pad_y : pad_y + nh, pad_x : pad_x + nw] = bilinear_resize(rgb, nw, nh)
+    chw = to_tensor(Image.fromarray(canvas)).numpy()
+    return quantize(chw.transpose(1, 2, 0), exponent), Letterbox(scale=scale, pad_x=pad_x, pad_y=pad_y)
+
+
+def board_input(jpeg: Path | str | bytes, size: int, exponent: int,
+                mode: BoardMode | str = "full") -> tuple[np.ndarray, Letterbox]:
+    """The int8 HWC tensor the detector firmware feeds ESP-DL for this camera JPEG.
+
+    Returns the tensor and the letterbox in the JPEG's own (full-frame) pixels, so
+    ``decode_output(q_out, out_exp, lb)`` gives boxes in frame coordinates, exactly as the
+    board reports them. ``mode`` is a BoardMode or its name ("full", "half_bilinear", ...);
+    "full" is the default firmware setting and perf_eval's path.
+    """
+    m = BoardMode.parse(mode)
+    rgb = board_rgb(jpeg, m.decode_scale, m.decoder)
+    q, lb = preprocess_rgb(rgb, size, exponent, m.resample)
+    return q, frame_letterbox(lb, m.decode_scale)
+
+
+def frame_letterbox(lb: Letterbox, decode_scale: int) -> Letterbox:
+    """A decoded-frame letterbox in full-frame pixels (tinyseek_core frame_letterbox)."""
+    return Letterbox(scale=lb.scale / 2**decode_scale, pad_x=lb.pad_x, pad_y=lb.pad_y)
 
 
 def nhwc_to_heads(out: np.ndarray, num_classes: int) -> dict[str, torch.Tensor]:

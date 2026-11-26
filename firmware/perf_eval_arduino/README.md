@@ -33,7 +33,9 @@ Do not edit the generated files; each starts with a "GENERATED" banner. Edit the
 ~/.venvs/tinyseek/bin/python -m tinyseek.deploy.arduino_sketch --check  # 1 if any copy is stale
 ```
 
-`tests/test_deploy_arduino_sketch.py` fails when a copy has drifted from its source.
+`tests/test_deploy_arduino_sketch.py` fails when a copy has drifted from its source. The
+same command also regenerates the live detector sketch (`../detector`), which shares these
+sources and this folder's `src/arduino_config.h`.
 
 ## Install (once)
 

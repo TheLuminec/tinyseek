@@ -40,6 +40,7 @@ bool write_file(const std::string &path, const void *data, size_t size);
 bool append_line(const std::string &path, const std::string &line);
 bool file_exists(const std::string &path);
 bool make_dir(const std::string &path);
+// File names in `dir` ending in `suffix` (case-insensitive), sorted.
 std::vector<std::string> list_dir(const std::string &dir, const char *suffix);
 std::vector<std::string> read_lines(const std::string &path);
 

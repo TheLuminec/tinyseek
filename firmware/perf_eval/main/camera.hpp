@@ -21,4 +21,24 @@ bool decode_jpeg(const uint8_t *jpeg, size_t len, uint8_t *rgb, int w, int h);
 // Which decoder decode_jpeg uses; recorded in every result row.
 const char *jpeg_decoder_name();
 
+// The detector's decoder choice (perf_eval keeps decode_jpeg above).
+//   kTjpgd:      the chip's ROM TJpgDec through esp_jpeg's esp_jpeg_decode() (espressif/esp_jpeg
+//                1.3.1, bundled with arduino-esp32 3.3.12). The same pixels as fmt2rgb888 at
+//                scale 0, and the only decoder with built-in descaling. Bit-exact PC model:
+//                tinyseek.deploy.tjpgd.
+//   kEspNewJpeg: esp_new_jpeg 1.0.2 (the ESP-IDF build's decoder, also linked by the core),
+//                full scale only. Closed source: no bit-exact PC reference.
+enum class JpegDecoder : uint8_t { kTjpgd = 0, kEspNewJpeg = 1 };
+
+const char *jpeg_decoder_label(JpegDecoder d);
+bool jpeg_decoder_available(JpegDecoder d);
+
+// Decodes a baseline JPEG at 1/2^scale_shift (0..3) into `rgb` (R,G,B, row-major,
+// 16-byte aligned, `capacity` bytes). The output is (width >> s) x (height >> s) as
+// TJpgDec rounds it, returned in out_w/out_h. Fails, printing why, for progressive or
+// non-3-component JPEGs, an unsupported decoder/scale pair or too small a buffer. Not
+// reentrant for kTjpgd (one shared work buffer): decode from one task at a time.
+bool decode_jpeg_scaled(const uint8_t *jpeg, size_t len, JpegDecoder decoder, int scale_shift, uint8_t *rgb,
+                        size_t capacity, int *out_w, int *out_h);
+
 }  // namespace perf

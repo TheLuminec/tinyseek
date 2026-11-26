@@ -25,6 +25,12 @@ struct Letterbox {
   int resized_h = 0;
 };
 
+// The letterbox of a frame that was decoded at 1/2^scale_shift of its size, expressed in
+// the full frame's pixels (scale / 2^shift, same padding), so decoded boxes come out in
+// full-frame coordinates. Halving a double is exact, so this equals the PC's
+// Letterbox(scale=lb.scale / 2**shift, ...).
+Letterbox frame_letterbox(const Letterbox &decoded, int scale_shift);
+
 // letterbox(image, size) with zoom 1 and centered shift. Python's round() is
 // round-half-to-even, so this uses nearbyint under the default rounding mode.
 Letterbox compute_letterbox(int src_w, int src_h, int size);
@@ -45,21 +51,45 @@ struct NormalizeParams {
   uint8_t pad_value = 114;
 };
 
-// Everything that depends only on (source size, model size, input exponent): built once
-// per resolution so the per-frame cost is just the resample and the table lookups.
+// How the letterboxed region is resampled from the source frame.
+//   kPillow:   Pillow's BILINEAR resize, bit-exact (the PC evaluation path; the default).
+//   kBilinear: plain 2-tap bilinear interpolation in 8-bit fixed point, no antialiasing
+//              filter. Much cheaper; meant for an already-reduced frame (a JPEG decoded at
+//              1/2 or 1/4 scale), where little further shrinking is left. Its exact PC
+//              reference is tinyseek.deploy.reference.bilinear_resize:
+//                per axis, output i samples p = floor(max(0, (2i+1)*in - out) * 256 / (2*out)),
+//                i0 = p >> 8, f = p & 255 (i0 = in-1, f = 0 past the last pixel);
+//                h = a*(256-fx) + b*fx (uint16), v = h0*(256-fy) + h1*fy,
+//                pixel = (v + 32768) >> 16.
+enum class Resample : uint8_t { kPillow = 0, kBilinear = 1 };
+
+// Per output pixel of one axis, for kBilinear: first source index and the weight (out of
+// 256) of the next one.
+struct BilinearAxis {
+  std::vector<int> i0;
+  std::vector<uint16_t> f;
+};
+
+BilinearAxis bilinear2_axis(int in_size, int out_size);
+
+// Everything that depends only on (source size, model size, input exponent, resample):
+// built once per resolution so the per-frame cost is just the resample and the lookups.
 struct PreprocessPlan {
   int src_w = 0, src_h = 0, size = 0, exponent = 0;
+  Resample resample = Resample::kPillow;
   Letterbox lb;
-  ResampleAxis horiz, vert;
-  int ybox_first = 0, ybox_rows = 0;  // source rows the vertical pass reads
+  ResampleAxis horiz, vert;           // kPillow
+  BilinearAxis bx, by;                // kBilinear
+  int ybox_first = 0, ybox_rows = 0;  // source rows the vertical pass reads (kPillow)
   int8_t lut[3][256];                 // uint8 pixel -> quantized normalized value
 };
 
 // `exponent` is the model input tensor's power-of-two exponent (value = q * 2^exponent).
 void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponent,
-               const NormalizeParams &norm = NormalizeParams());
+               const NormalizeParams &norm = NormalizeParams(), Resample resample = Resample::kPillow);
 
-// Bytes of scratch `preprocess` needs (horizontal-pass rows, uint8 RGB).
+// Bytes of scratch `preprocess` needs (kPillow: horizontal-pass rows, uint8 RGB;
+// kBilinear: two horizontally resampled rows, uint16 RGB).
 size_t scratch_bytes(const PreprocessPlan &plan);
 
 // rgb: src_h x src_w x 3, R,G,B order, row-major. out: size x size x 3 int8 (HWC).

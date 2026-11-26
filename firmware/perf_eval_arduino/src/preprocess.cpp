@@ -90,20 +90,58 @@ int8_t quantize_int8(float x, int exponent) {
   return static_cast<int8_t>(r);
 }
 
+Letterbox frame_letterbox(const Letterbox &decoded, int scale_shift) {
+  Letterbox lb = decoded;
+  lb.scale = std::ldexp(decoded.scale, -scale_shift);
+  return lb;
+}
+
+BilinearAxis bilinear2_axis(int in_size, int out_size) {
+  BilinearAxis ax;
+  ax.i0.resize(out_size);
+  ax.f.resize(out_size);
+  for (int i = 0; i < out_size; ++i) {
+    // Source position (i + 0.5) * in / out - 0.5, in 1/256 pixels, floored; integers only
+    // so the PC reference reproduces it exactly.
+    const int64_t num = int64_t(2 * i + 1) * in_size - out_size;
+    const int64_t p = num > 0 ? (num * 256) / (int64_t(2) * out_size) : 0;
+    int i0 = static_cast<int>(p >> 8);
+    int f = static_cast<int>(p & 255);
+    if (i0 >= in_size - 1) {
+      i0 = in_size - 1;
+      f = 0;
+    }
+    ax.i0[i] = i0;
+    ax.f[i] = static_cast<uint16_t>(f);
+  }
+  return ax;
+}
+
 void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponent,
-               const NormalizeParams &norm) {
+               const NormalizeParams &norm, Resample resample) {
   plan.src_w = src_w;
   plan.src_h = src_h;
   plan.size = size;
   plan.exponent = exponent;
+  plan.resample = resample;
   plan.lb = compute_letterbox(src_w, src_h, size);
-  plan.horiz = bilinear_axis(src_w, plan.lb.resized_w);
-  plan.vert = bilinear_axis(src_h, plan.lb.resized_h);
-  // Pillow runs the horizontal pass only over the rows the vertical pass will read.
-  const int h = plan.lb.resized_h;
-  plan.ybox_first = plan.vert.bounds[0];
-  int ybox_last = plan.vert.bounds[h * 2 - 2] + plan.vert.bounds[h * 2 - 1];
-  plan.ybox_rows = ybox_last - plan.ybox_first;
+  if (resample == Resample::kBilinear) {
+    plan.bx = bilinear2_axis(src_w, plan.lb.resized_w);
+    plan.by = bilinear2_axis(src_h, plan.lb.resized_h);
+    plan.horiz = ResampleAxis();
+    plan.vert = ResampleAxis();
+    plan.ybox_first = plan.ybox_rows = 0;
+  } else {
+    plan.horiz = bilinear_axis(src_w, plan.lb.resized_w);
+    plan.vert = bilinear_axis(src_h, plan.lb.resized_h);
+    plan.bx = BilinearAxis();
+    plan.by = BilinearAxis();
+    // Pillow runs the horizontal pass only over the rows the vertical pass will read.
+    const int h = plan.lb.resized_h;
+    plan.ybox_first = plan.vert.bounds[0];
+    int ybox_last = plan.vert.bounds[h * 2 - 2] + plan.vert.bounds[h * 2 - 1];
+    plan.ybox_rows = ybox_last - plan.ybox_first;
+  }
   for (int c = 0; c < 3; ++c) {
     for (int v = 0; v < 256; ++v) {
       // float32 throughout, the same operations and order as numpy in to_tensor.
@@ -115,10 +153,79 @@ void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponen
 }
 
 size_t scratch_bytes(const PreprocessPlan &plan) {
+  if (plan.resample == Resample::kBilinear) return size_t(2) * plan.lb.resized_w * 3 * sizeof(uint16_t);
   return static_cast<size_t>(plan.ybox_rows) * plan.lb.resized_w * 3;
 }
 
+namespace {
+
+void fill_pad(const PreprocessPlan &plan, int8_t *out) {
+  const int8_t pad[3] = {plan.lut[0][114], plan.lut[1][114], plan.lut[2][114]};
+  for (int i = 0; i < plan.size * plan.size; ++i) {
+    out[i * 3 + 0] = pad[0];
+    out[i * 3 + 1] = pad[1];
+    out[i * 3 + 2] = pad[2];
+  }
+}
+
+// One source row resampled horizontally (kBilinear), uint16 per channel (0..65280).
+void bilinear_row(const PreprocessPlan &plan, const uint8_t *row, uint16_t *dst) {
+  const int nw = plan.lb.resized_w;
+  const int last = plan.src_w - 1;
+  for (int x = 0; x < nw; ++x) {
+    const int i0 = plan.bx.i0[x];
+    const int i1 = i0 < last ? i0 + 1 : last;
+    const uint32_t f = plan.bx.f[x], g = 256 - f;
+    const uint8_t *a = row + i0 * 3, *b = row + i1 * 3;
+    dst[x * 3 + 0] = static_cast<uint16_t>(a[0] * g + b[0] * f);
+    dst[x * 3 + 1] = static_cast<uint16_t>(a[1] * g + b[1] * f);
+    dst[x * 3 + 2] = static_cast<uint16_t>(a[2] * g + b[2] * f);
+  }
+}
+
+void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out) {
+  const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
+  const int last = plan.src_h - 1;
+  const size_t stride = static_cast<size_t>(plan.src_w) * 3;
+  // A two-row cache of horizontally resampled source rows: consecutive output rows
+  // mostly reuse one or both.
+  uint16_t *rows[2] = {reinterpret_cast<uint16_t *>(scratch),
+                       reinterpret_cast<uint16_t *>(scratch) + static_cast<size_t>(nw) * 3};
+  int tag[2] = {-1, -1};
+  auto load = [&](int k, int y) {
+    if (tag[k] != y) {
+      bilinear_row(plan, rgb + static_cast<size_t>(y) * stride, rows[k]);
+      tag[k] = y;
+    }
+  };
+  fill_pad(plan, out);
+  for (int yy = 0; yy < nh; ++yy) {
+    const int y0 = plan.by.i0[yy];
+    const int y1 = y0 < last ? y0 + 1 : last;
+    const uint32_t f = plan.by.f[yy], g = 256 - f;
+    // Slot for y0: where it already is, else the slot not holding y1.
+    const int k0 = tag[0] == y0 ? 0 : (tag[1] == y0 ? 1 : (tag[0] == y1 ? 1 : 0));
+    load(k0, y0);
+    const int k1 = tag[k0] == y1 ? k0 : 1 - k0;
+    load(k1, y1);
+    const uint16_t *r0 = rows[k0], *r1 = rows[k1];
+    int8_t *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
+    for (int i = 0; i < nw * 3; i += 3) {
+      for (int c = 0; c < 3; ++c) {
+        const uint32_t v = r0[i + c] * g + r1[i + c] * f;
+        dst[i + c] = plan.lut[c][(v + 32768u) >> 16];
+      }
+    }
+  }
+}
+
+}  // namespace
+
 void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out) {
+  if (plan.resample == Resample::kBilinear) {
+    preprocess_bilinear(plan, rgb, scratch, out);
+    return;
+  }
   const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
   const bool need_h = nw != plan.src_w;
   const bool need_v = nh != plan.src_h;
@@ -153,12 +260,7 @@ void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch
   const int temp_w = need_h ? nw : plan.src_w;
 
   // Pad colour everywhere, then the resized image at (pad_x, pad_y).
-  const int8_t pad[3] = {plan.lut[0][114], plan.lut[1][114], plan.lut[2][114]};
-  for (int i = 0; i < size * size; ++i) {
-    out[i * 3 + 0] = pad[0];
-    out[i * 3 + 1] = pad[1];
-    out[i * 3 + 2] = pad[2];
-  }
+  fill_pad(plan, out);
 
   // Vertical pass straight into the quantized canvas (no second uint8 buffer).
   const int ks = plan.vert.ksize;

@@ -250,10 +250,20 @@ main/platform.{hpp,cpp}      platform shim: SD card, files, heap snapshots, timi
 main/camera.{hpp,cpp}        OV2640 with the frozen settings; JPEG decode (esp_new_jpeg here,
                              esp32-camera's fmt2rgb888 in the sketch)
 components/tinyseek_core/    portable C++ (no ESP headers): Pillow-exact letterbox and
-                             quantisation (preprocess.*), CenterNet decode (decode.*),
-                             JPEG header check (jpeg_info.*)
+                             quantisation, plus a fast 2-tap bilinear mode the detector can
+                             select (preprocess.*), CenterNet decode (decode.*), JPEG header
+                             check (jpeg_info.*)
 host_test/core_cli.cpp       host driver for tinyseek_core, used by tests/test_deploy_core.py
+host_test/tjpgd/             ChaN's TJpgDec R0.01b (verbatim, its licence header kept) and a
+                             driver that runs it as esp_jpeg runs the ESP32-S3 ROM copy;
+                             tinyseek.deploy.tjpgd builds it so the PC decodes JPEGs exactly
+                             like the board (tests/test_deploy_tjpgd.py)
 ```
+
+The same shared sources (platform, camera, tinyseek_core) also feed the live detector,
+`../detector`. `camera.*` has a second decoder entry, `decode_jpeg_scaled()`. It runs TJpgDec
+through esp_jpeg at 1/1 to 1/8 size, or esp_new_jpeg, and the detector uses it. perf_eval
+itself still calls `decode_jpeg()` only, so its measurements and result files are unchanged.
 
 The portable core is the main correctness check that can run off the board:
 

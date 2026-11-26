@@ -17,7 +17,14 @@ import pytest
 import torch
 from PIL import Image
 
-from tinyseek.deploy.reference import Detection, decode_output, model_input, quantize
+from tinyseek.deploy.reference import (
+    Detection,
+    bilinear_resize,
+    decode_output,
+    model_input,
+    preprocess_rgb,
+    quantize,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FW = ROOT / "firmware" / "perf_eval"
@@ -40,11 +47,13 @@ def cli(tmp_path_factory) -> Path:
     return out
 
 
-def run_preprocess(cli: Path, image: Image.Image, size: int, exponent: int, tmp: Path) -> tuple[np.ndarray, list[str]]:
+def run_preprocess(cli: Path, image: Image.Image, size: int, exponent: int, tmp: Path,
+                   resample: str | None = None) -> tuple[np.ndarray, list[str]]:
     rgb = tmp / "in.rgb"
     np.asarray(image.convert("RGB"), np.uint8).tofile(rgb)
     r = subprocess.run([str(cli), "preprocess", str(rgb), str(image.width), str(image.height), str(size),
-                        str(exponent), str(tmp / "out.bin")], capture_output=True, text=True, check=True)
+                        str(exponent), str(tmp / "out.bin"), *([resample] if resample else [])],
+                       capture_output=True, text=True, check=True)
     return np.fromfile(tmp / "out.bin", np.int8).reshape(size, size, 3), r.stdout.split()
 
 
@@ -65,7 +74,7 @@ def assert_same_dets(ref: list[Detection], got: list[Detection]) -> None:
         assert max(abs(a.x - b.x), abs(a.y - b.y), abs(a.w - b.w), abs(a.h - b.h)) < 1e-3
 
 
-@pytest.mark.parametrize("wh", [(800, 600), (333, 217), (64, 200), (100, 100)])
+@pytest.mark.parametrize("wh", [(800, 600), (400, 300), (200, 150), (333, 217), (64, 200), (100, 100)])
 @pytest.mark.parametrize("size", [128, 192])
 def test_preprocess_matches_pc_on_random_frames(cli, tmp_path, wh, size):
     rng = np.random.default_rng(sum(wh) + size)
@@ -74,6 +83,32 @@ def test_preprocess_matches_pc_on_random_frames(cli, tmp_path, wh, size):
     ref, lb = model_input(image, size, -6)
     assert np.array_equal(got, ref)
     assert (float(scale), int(pad_x), int(pad_y)) == (lb.scale, lb.pad_x, lb.pad_y)
+
+
+@pytest.mark.parametrize("wh", [(400, 300), (200, 150), (800, 600), (100, 75), (333, 217), (7, 5), (1, 1)])
+@pytest.mark.parametrize("size", [128, 192])
+def test_bilinear_resample_matches_pc_reference(cli, tmp_path, wh, size):
+    """The fast resample (Resample::kBilinear) against reference.preprocess_rgb, byte for byte."""
+    rng = np.random.default_rng(sum(wh) * size)
+    rgb = rng.integers(0, 256, (wh[1], wh[0], 3), dtype=np.uint8)
+    got, (scale, pad_x, pad_y, _, _) = run_preprocess(cli, Image.fromarray(rgb), size, -6, tmp_path, "bilinear")
+    ref, lb = preprocess_rgb(rgb, size, -6, "bilinear")
+    assert np.array_equal(got, ref)
+    assert (float(scale), int(pad_x), int(pad_y)) == (lb.scale, lb.pad_x, lb.pad_y)
+
+
+def test_bilinear_resize_reference_properties():
+    """Same size is the identity, a flat image stays flat, and 2:1 averages neighbour pairs."""
+    rng = np.random.default_rng(1)
+    rgb = rng.integers(0, 256, (30, 40, 3), dtype=np.uint8)
+    assert np.array_equal(bilinear_resize(rgb, 40, 30), rgb)
+    flat = np.full((60, 80, 3), 77, np.uint8)
+    assert (bilinear_resize(flat, 37, 23) == 77).all()
+    # Downscaling by exactly 2 samples halfway between source pixels: rounded pair means.
+    half = bilinear_resize(rgb, 20, 15).astype(int)
+    a = rgb.astype(int)
+    sum4 = a[0::2, 0::2] + a[0::2, 1::2] + a[1::2, 0::2] + a[1::2, 1::2]
+    assert np.array_equal(half, (sum4 + 2) // 4)  # weights 128/256 each way: round half up
 
 
 @pytest.mark.skipif(not CAMERA_PHOTO.exists(), reason="ESP32 camera photos not present")

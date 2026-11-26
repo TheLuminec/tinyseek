@@ -19,6 +19,26 @@
 #include "esp_jpeg_dec.h"
 #endif
 
+// For decode_jpeg_scaled: TJpgDec through esp_jpeg wherever its header is on the include
+// path (the Arduino core; the ESP-IDF build would need the espressif/esp_jpeg component),
+// esp_new_jpeg wherever that is (both builds).
+#if defined(__has_include)
+#if __has_include("jpeg_decoder.h")
+#define TINYSEEK_HAVE_ESP_JPEG 1
+#include "jpeg_decoder.h"
+#endif
+#if __has_include("esp_jpeg_dec.h")
+#define TINYSEEK_HAVE_ESP_NEW_JPEG 1
+#include "esp_jpeg_dec.h"
+#endif
+#endif
+#ifndef TINYSEEK_HAVE_ESP_JPEG
+#define TINYSEEK_HAVE_ESP_JPEG 0
+#endif
+#ifndef TINYSEEK_HAVE_ESP_NEW_JPEG
+#define TINYSEEK_HAVE_ESP_NEW_JPEG 0
+#endif
+
 #define BOARD_FREENOVE_S3_CAM
 #include "board_pins.h"
 
@@ -137,6 +157,84 @@ bool decode_jpeg(const uint8_t *jpeg, size_t len, uint8_t *rgb, int w, int h) {
   }
   jpeg_dec_close(dec);
   return ok;
+#endif
+}
+
+const char *jpeg_decoder_label(JpegDecoder d) {
+  return d == JpegDecoder::kTjpgd ? "tjpgd (ROM TJpgDec via esp_jpeg)" : "esp_new_jpeg";
+}
+
+bool jpeg_decoder_available(JpegDecoder d) {
+  return d == JpegDecoder::kTjpgd ? TINYSEEK_HAVE_ESP_JPEG : TINYSEEK_HAVE_ESP_NEW_JPEG;
+}
+
+bool decode_jpeg_scaled(const uint8_t *jpeg, size_t len, JpegDecoder decoder, int scale_shift, uint8_t *rgb,
+                        size_t capacity, int *out_w, int *out_h) {
+  tinyseek::JpegInfo info;
+  if (!tinyseek::jpeg_info(jpeg, len, info) || info.progressive || info.components != 3) {
+    logln("JPEG not decodable on the board: %dx%d, %d components%s", info.width, info.height, info.components,
+          info.progressive ? ", progressive" : "");
+    return false;
+  }
+  if (scale_shift < 0 || scale_shift > 3) return false;
+  const int w = info.width >> scale_shift, h = info.height >> scale_shift;
+  if (size_t(w) * h * 3 > capacity) {
+    logln("JPEG %dx%d at 1/%d does not fit the %u-byte frame buffer", info.width, info.height, 1 << scale_shift,
+          unsigned(capacity));
+    return false;
+  }
+  if (decoder == JpegDecoder::kTjpgd) {
+#if TINYSEEK_HAVE_ESP_JPEG
+    // esp_jpeg 1.3.1 (jpeg_decoder.h): with CONFIG_JD_USE_ROM it runs the ROM TJpgDec R0.01b.
+    // Our own work buffer in internal RAM, so this does not share esp32-camera's static one.
+    static uint8_t work[3100];  // esp_jpeg's JPEG_WORK_BUF_SIZE
+    esp_jpeg_image_cfg_t cfg = {};
+    cfg.indata = const_cast<uint8_t *>(jpeg);
+    cfg.indata_size = static_cast<uint32_t>(len);
+    cfg.outbuf = rgb;
+    cfg.outbuf_size = static_cast<uint32_t>(capacity);
+    cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
+    cfg.out_scale = static_cast<esp_jpeg_image_scale_t>(scale_shift);  // 0, 1/2, 1/4, 1/8 in enum order
+    cfg.flags.swap_color_bytes = 0;  // TJpgDec emits R,G,B
+    cfg.advanced.working_buffer = work;
+    cfg.advanced.working_buffer_size = sizeof(work);
+    esp_jpeg_image_output_t img = {};
+    if (esp_jpeg_decode(&cfg, &img) != ESP_OK) return false;
+    *out_w = img.width;
+    *out_h = img.height;
+    return img.width == w && img.height == h;
+#else
+    logln("TJpgDec (esp_jpeg) is not in this build");
+    return false;
+#endif
+  }
+#if TINYSEEK_HAVE_ESP_NEW_JPEG
+  if (scale_shift != 0) {
+    logln("esp_new_jpeg is used at full scale only (decode_scale=0)");
+    return false;
+  }
+  // esp_new_jpeg 1.0.2 include/esp_jpeg_dec.h; output must be 16-byte aligned.
+  jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+  config.output_type = JPEG_PIXEL_FORMAT_RGB888;
+  jpeg_dec_handle_t dec = nullptr;
+  if (jpeg_dec_open(&config, &dec) != JPEG_ERR_OK) return false;
+  jpeg_dec_io_t io = {};
+  jpeg_dec_header_info_t hdr = {};
+  io.inbuf = const_cast<uint8_t *>(jpeg);
+  io.inbuf_len = static_cast<int>(len);
+  bool ok = jpeg_dec_parse_header(dec, &io, &hdr) == JPEG_ERR_OK && hdr.width == info.width &&
+            hdr.height == info.height;
+  if (ok) {
+    io.outbuf = rgb;
+    ok = jpeg_dec_process(dec, &io) == JPEG_ERR_OK;
+  }
+  jpeg_dec_close(dec);
+  *out_w = w;
+  *out_h = h;
+  return ok;
+#else
+  logln("esp_new_jpeg is not in this build");
+  return false;
 #endif
 }
 
