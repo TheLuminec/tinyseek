@@ -1,0 +1,9 @@
+# Cup: camera photos outside 016/017 (479 photos, 280 cup boxes) plus real COCO images, no
+# synthetic images: the reference for what the synthetic set adds. Scored on 016/017.
+base: heldout_cup_016_017.yaml
+condition: heldout_cup_cam_coco
+cam_repeat: 1
+train:
+  sources:
+    - {ann: "esp32cam/reviewed_labels_no016_017.json", images: esp32cam/raw, repeat: "{cam_repeat}"}
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017}
