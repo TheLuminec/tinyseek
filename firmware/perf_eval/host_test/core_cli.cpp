@@ -1,11 +1,12 @@
 // Host driver for tinyseek_core, so the Python tests can check the C++ against the PC
 // pipeline on this machine (tests/test_deploy_core.py builds and runs it).
 //
-//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear]
-//       writes size*size*3 int8 (HWC) and prints "scale pad_x pad_y resized_w resized_h"
-//   core_cli decode <int8 NHWC file> <grid> <num_classes> <stride> <exponent>
-//                   <scale> <pad_x> <pad_y> <score_threshold> <max_detections>
-//       prints one "x y w h score cls" line per detection
+//   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear] [int16]
+//       writes size*size*3 int8 (or int16, little-endian) HWC and prints
+//       "scale pad_x pad_y resized_w resized_h"
+//   core_cli decode <NHWC file> <grid> <num_classes> <stride> <exponent>
+//                   <scale> <pad_x> <pad_y> <score_threshold> <max_detections> [int16]
+//       reads an int8 (or int16) tensor; prints one "x y w h score cls" line per detection
 //   core_cli jpeginfo <file.jpg>
 //       prints "width height components progressive" (or "invalid", exit 1)
 #include <cstdio>
@@ -36,18 +37,31 @@ static int run_preprocess(char **a) {
     std::fprintf(stderr, "expected %d bytes, got %zu\n", w * h * 3, rgb.size());
     return 2;
   }
-  const bool bilinear = a[6] && !std::strcmp(a[6], "bilinear");
-  if (a[6] && !bilinear && std::strcmp(a[6], "pillow")) {
-    std::fprintf(stderr, "resample must be pillow or bilinear\n");
-    return 2;
+  bool bilinear = false, wide = false;
+  for (int i = 6; a[i]; ++i) {
+    if (!std::strcmp(a[i], "bilinear")) {
+      bilinear = true;
+    } else if (!std::strcmp(a[i], "int16")) {
+      wide = true;
+    } else if (std::strcmp(a[i], "pillow")) {
+      std::fprintf(stderr, "options are pillow|bilinear and int16\n");
+      return 2;
+    }
   }
   static tinyseek::PreprocessPlan plan;  // 768-byte LUT: keep it off the stack
   tinyseek::make_plan(plan, w, h, size, exponent, tinyseek::NormalizeParams(),
                       bilinear ? tinyseek::Resample::kBilinear : tinyseek::Resample::kPillow);
   std::vector<uint8_t> scratch(tinyseek::scratch_bytes(plan));
-  std::vector<int8_t> out(static_cast<size_t>(size) * size * 3);
-  tinyseek::preprocess(plan, rgb.data(), scratch.data(), out.data());
-  std::ofstream(a[5], std::ios::binary).write(reinterpret_cast<const char *>(out.data()), out.size());
+  const size_t n = static_cast<size_t>(size) * size * 3;
+  if (wide) {
+    std::vector<int16_t> out(n);
+    tinyseek::preprocess(plan, rgb.data(), scratch.data(), out.data());
+    std::ofstream(a[5], std::ios::binary).write(reinterpret_cast<const char *>(out.data()), n * 2);
+  } else {
+    std::vector<int8_t> out(n);
+    tinyseek::preprocess(plan, rgb.data(), scratch.data(), out.data());
+    std::ofstream(a[5], std::ios::binary).write(reinterpret_cast<const char *>(out.data()), n);
+  }
   std::printf("%.17g %d %d %d %d\n", plan.lb.scale, plan.lb.pad_x, plan.lb.pad_y,
               plan.lb.resized_w, plan.lb.resized_h);
   return 0;
@@ -66,13 +80,21 @@ static int run_decode(char **a) {
   lb.pad_y = std::atoi(a[7]);
   p.score_threshold = static_cast<float>(std::atof(a[8]));
   p.max_detections = std::atoi(a[9]);
-  if (raw.size() != static_cast<size_t>(p.grid_h) * p.grid_w * (p.num_classes + 4)) {
-    std::fprintf(stderr, "output tensor has %zu bytes, expected %d\n", raw.size(),
-                 p.grid_h * p.grid_w * (p.num_classes + 4));
+  const bool wide = a[10] && !std::strcmp(a[10], "int16");
+  const size_t elem = wide ? 2 : 1;
+  if (raw.size() != elem * p.grid_h * p.grid_w * (p.num_classes + 4)) {
+    std::fprintf(stderr, "output tensor has %zu bytes, expected %zu\n", raw.size(),
+                 elem * p.grid_h * p.grid_w * (p.num_classes + 4));
     return 2;
   }
   std::vector<tinyseek::Detection> dets;
-  tinyseek::decode(reinterpret_cast<const int8_t *>(raw.data()), p, lb, dets);
+  if (wide) {
+    std::vector<int16_t> q(raw.size() / 2);
+    std::memcpy(q.data(), raw.data(), raw.size());
+    tinyseek::decode(q.data(), p, lb, dets);
+  } else {
+    tinyseek::decode(reinterpret_cast<const int8_t *>(raw.data()), p, lb, dets);
+  }
   for (const auto &d : dets) std::printf("%.9g %.9g %.9g %.9g %.9g %d\n", d.x, d.y, d.w, d.h, d.score, d.cls);
   return 0;
 }
@@ -89,8 +111,8 @@ static int run_jpeginfo(char **a) {
 }
 
 int main(int argc, char **argv) {
-  if ((argc == 8 || argc == 9) && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
-  if (argc == 12 && !std::strcmp(argv[1], "decode")) return run_decode(argv + 2);
+  if (argc >= 8 && argc <= 10 && !std::strcmp(argv[1], "preprocess")) return run_preprocess(argv + 2);
+  if ((argc == 12 || argc == 13) && !std::strcmp(argv[1], "decode")) return run_decode(argv + 2);
   if (argc == 3 && !std::strcmp(argv[1], "jpeginfo")) return run_jpeginfo(argv + 2);
   std::fprintf(stderr, "usage: see the comment at the top of core_cli.cpp\n");
   return 2;

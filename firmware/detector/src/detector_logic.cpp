@@ -251,6 +251,8 @@ ModelMeta parse_model_meta(const KeyValues &kv) {
   if (parse_int(get("max_detections"), 1, 1000, &v)) m.max_detections = v;
   if (parse_float(get("detect_threshold"), 0.0f, 1.0f, &f)) m.detect_threshold = f;
   m.sha256 = get("espdl_sha256");
+  m.input_dtype = get("input_dtype");
+  m.output_dtype = get("output_dtype");
   m.run = get("run");
   return m;
 }

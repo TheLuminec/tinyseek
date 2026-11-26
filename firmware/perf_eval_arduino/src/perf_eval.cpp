@@ -4,7 +4,7 @@
 //
 // For every /sdcard/tinyseek_eval/models/<m>.espdl:
 //   1. load time and heap before/after load;
-//   2. preprocessing (800x600 RGB -> letterboxed, normalised, int8 input), inference and
+//   2. preprocessing (800x600 RGB -> letterboxed, normalised, int8 or int16 input), inference and
 //      post-processing (decode to boxes) timed separately: warm-up, then N timed runs;
 //   3. parity: every staged case through the board pipeline, from the PC-decoded .rgb and
 //      from the board's own JPEG decode, tensors and detections written back to the card;
@@ -50,10 +50,32 @@ struct ModelCtx {
   dl::Model *model = nullptr;
   dl::TensorBase *input = nullptr, *output = nullptr;
   int size = 0, grid = 0, channels = 0, in_exp = 0, out_exp = 0;
+  bool in16 = false, out16 = false;  // int16 input/output tensors (w16a16 export), from the model
   tinyseek::PreprocessPlan *plan = nullptr;
   tinyseek::DecodeParams dp;
   tinyseek::NormalizeParams norm;
+  size_t in_bytes() const { return size_t(size) * size * 3 * (in16 ? 2 : 1); }
+  size_t out_bytes() const { return size_t(grid) * grid * channels * (out16 ? 2 : 1); }
+  const char *in_dtype() const { return in16 ? "INT16" : "INT8"; }
+  const char *out_dtype() const { return out16 ? "INT16" : "INT8"; }
 };
+
+// Preprocess into `dst` and decode the model output, in whichever element type the model has.
+void preprocess_into(const ModelCtx &m, const uint8_t *rgb, uint8_t *scratch, void *dst) {
+  if (m.in16) {
+    tinyseek::preprocess(*m.plan, rgb, scratch, static_cast<int16_t *>(dst));
+  } else {
+    tinyseek::preprocess(*m.plan, rgb, scratch, static_cast<int8_t *>(dst));
+  }
+}
+
+void decode_output(const ModelCtx &m, std::vector<tinyseek::Detection> &dets) {
+  if (m.out16) {
+    tinyseek::decode(static_cast<const int16_t *>(m.output->data), m.dp, m.plan->lb, dets);
+  } else {
+    tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, m.plan->lb, dets);
+  }
+}
 
 std::string g_run;   // results/run_NNN
 std::string g_meta;  // leading CSV columns shared by every row
@@ -65,9 +87,9 @@ void fail(const char *why) {
 
 void bench_row(const ModelCtx &m, const Settings &s, const char *stage, const perf::Stats &st, double fps = 0) {
   char buf[512];
-  snprintf(buf, sizeof(buf), "%s,%s,%u,%d,%d,%d,%d,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.2f", g_meta.c_str(), m.name.c_str(),
-           unsigned(m.file_bytes), m.size, m.in_exp, m.out_exp, s.internal_kb, stage, st.n, s.warmup, st.mean_ms,
-           st.min_ms, st.max_ms, st.std_ms, fps);
+  snprintf(buf, sizeof(buf), "%s,%s,%u,%d,%d,%d,%d,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%s,%s", g_meta.c_str(),
+           m.name.c_str(), unsigned(m.file_bytes), m.size, m.in_exp, m.out_exp, s.internal_kb, stage, st.n, s.warmup,
+           st.mean_ms, st.min_ms, st.max_ms, st.std_ms, fps, m.in_dtype(), m.out_dtype());
   perf::append_line(g_run + "/bench.csv", buf);
   perf::logln("%-6s %-15s n=%-4d mean %8.3f ms  min %8.3f  max %8.3f  std %7.3f%s", m.name.c_str(), stage, st.n,
            st.mean_ms, st.min_ms, st.max_ms, st.std_ms, fps > 0 ? "  (fps below)" : "");
@@ -136,18 +158,22 @@ bool load_model(ModelCtx &m, const Settings &s) {
   // get_shape() returns a copy in 3.3.11 and a const reference in 3.3.15; copy in both.
   const std::vector<int> is = m.input->get_shape();
   const std::vector<int> os = m.output->get_shape();
-  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 || m.input->get_dtype() != dl::DATA_TYPE_INT8) {
-    perf::logln("ERROR: %s: input must be int8 NHWC [1,S,S,3]", m.name.c_str());
+  const dl::dtype_t idt = m.input->get_dtype(), odt = m.output->get_dtype();
+  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 ||
+      (idt != dl::DATA_TYPE_INT8 && idt != dl::DATA_TYPE_INT16)) {
+    perf::logln("ERROR: %s: input must be int8 or int16 NHWC [1,S,S,3]", m.name.c_str());
     return false;
   }
-  if (os.size() != 4 || os[1] != os[2] || m.output->get_dtype() != dl::DATA_TYPE_INT8) {
-    perf::logln("ERROR: %s: output must be int8 NHWC [1,G,G,C]", m.name.c_str());
+  if (os.size() != 4 || os[1] != os[2] || (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
+    perf::logln("ERROR: %s: output must be int8 or int16 NHWC [1,G,G,C]", m.name.c_str());
     return false;
   }
   m.size = is[1];
   m.grid = os[1];
   m.channels = os[3];
-  m.in_exp = m.input->get_exponent();  // read from the model, never assumed
+  m.in16 = idt == dl::DATA_TYPE_INT16;  // dtypes and exponents read from the model, never assumed
+  m.out16 = odt == dl::DATA_TYPE_INT16;
+  m.in_exp = m.input->get_exponent();
   m.out_exp = m.output->get_exponent();
   m.dp.grid_h = m.dp.grid_w = m.grid;
   m.dp.num_classes = m.channels - 4;
@@ -159,8 +185,13 @@ bool load_model(ModelCtx &m, const Settings &s) {
       perf::kv_int(meta, "output_exponent", m.out_exp) != m.out_exp) {
     perf::logln("WARNING: %s: exponents differ from the staged model.txt (stale card?)", m.name.c_str());
   }
+  if ((meta.count("input_dtype") && meta["input_dtype"] != m.in_dtype()) ||
+      (meta.count("output_dtype") && meta["output_dtype"] != m.out_dtype())) {
+    perf::logln("WARNING: %s: I/O dtypes differ from the staged model.txt (stale card?)", m.name.c_str());
+  }
   perf::logln("%s: input [1,%d,%d,3] exp %d, output [1,%d,%d,%d] exp %d, %u bytes", m.name.c_str(), m.size, m.size,
            m.in_exp, m.grid, m.grid, m.channels, m.out_exp, unsigned(m.file_bytes));
+  perf::logln("%s: input %s, output %s", m.name.c_str(), m.in_dtype(), m.out_dtype());
 
   // The plan (resample coefficients, quantisation tables) is per resolution and built
   // once; it is timed as its own row, not as part of per-frame preprocessing.
@@ -184,13 +215,13 @@ void unload(ModelCtx &m) {
 struct Buffers {
   uint8_t *rgb = nullptr;      // 800x600x3, PSRAM, 16-byte aligned for the JPEG decoder
   uint8_t *scratch = nullptr;  // horizontal-pass rows, PSRAM
-  int8_t *in = nullptr;        // model input staging, PSRAM
+  void *in = nullptr;          // model input staging (int8 or int16), PSRAM
   size_t scratch_size = 0, in_size = 0;
 };
 
 bool ensure_buffers(Buffers &b, const ModelCtx &m) {
   if (!b.rgb) b.rgb = static_cast<uint8_t *>(perf::alloc_psram(kFrameW * kFrameH * 3));
-  size_t need_s = tinyseek::scratch_bytes(*m.plan), need_i = size_t(m.size) * m.size * 3;
+  size_t need_s = tinyseek::scratch_bytes(*m.plan), need_i = m.in_bytes();
   if (need_s > b.scratch_size) {
     perf::free_buffer(b.scratch);
     b.scratch = static_cast<uint8_t *>(perf::alloc_psram(need_s));
@@ -198,7 +229,7 @@ bool ensure_buffers(Buffers &b, const ModelCtx &m) {
   }
   if (need_i > b.in_size) {
     perf::free_buffer(b.in);
-    b.in = static_cast<int8_t *>(perf::alloc_psram(need_i));
+    b.in = perf::alloc_psram(need_i);
     b.in_size = need_i;
   }
   return b.rgb && b.scratch && b.in;
@@ -206,8 +237,8 @@ bool ensure_buffers(Buffers &b, const ModelCtx &m) {
 
 // ESP-DL shares one arena between input, intermediates and output, so the input is
 // refilled before every run (outside the timed region).
-void set_input(const ModelCtx &m, const int8_t *in) {
-  memcpy(m.input->data, in, size_t(m.size) * m.size * 3);
+void set_input(const ModelCtx &m, const void *in) {
+  memcpy(m.input->data, in, m.in_bytes());
 }
 
 void run_benchmark(ModelCtx &m, const Settings &s, Buffers &b) {
@@ -222,14 +253,14 @@ void run_benchmark(ModelCtx &m, const Settings &s, Buffers &b) {
     int64_t a = perf::now_us();
     if (!perf::decode_jpeg(jpeg, jlen, b.rgb, kFrameW, kFrameH)) fail("bench.jpg decode failed (must be 800x600)");
     int64_t c = perf::now_us();
-    tinyseek::preprocess(*m.plan, b.rgb, b.scratch, b.in);
+    preprocess_into(m, b.rgb, b.scratch, b.in);
     int64_t d = perf::now_us();
     set_input(m, b.in);
     int64_t e = perf::now_us();
     m.model->run();
     int64_t f = perf::now_us();
     dets.clear();
-    tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, m.plan->lb, dets);
+    decode_output(m, dets);
     int64_t g = perf::now_us();
     if (timed) {
       t_jpeg.push_back(c - a);
@@ -261,13 +292,13 @@ void write_dets(const std::string &path, const ModelCtx &m, const std::string &c
 
 // One case through the pipeline from an RGB frame already in b.rgb; tensors + detections to the card.
 void parity_one(const ModelCtx &m, Buffers &b, const std::string &dir, const std::string &cs, const char *src) {
-  tinyseek::preprocess(*m.plan, b.rgb, b.scratch, b.in);
-  perf::write_file(dir + "/" + cs + "_" + src + "_in.bin", b.in, size_t(m.size) * m.size * 3);
+  preprocess_into(m, b.rgb, b.scratch, b.in);
+  perf::write_file(dir + "/" + cs + "_" + src + "_in.bin", b.in, m.in_bytes());  // int16: little-endian
   set_input(m, b.in);
   m.model->run();
-  perf::write_file(dir + "/" + cs + "_" + src + "_out.bin", m.output->data, size_t(m.grid) * m.grid * m.channels);
+  perf::write_file(dir + "/" + cs + "_" + src + "_out.bin", m.output->data, m.out_bytes());
   std::vector<tinyseek::Detection> dets;
-  tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, m.plan->lb, dets);
+  decode_output(m, dets);
   write_dets(dir + "/dets.csv", m, cs, src, dets);
   perf::logln("%s %s %s: %u detections", m.name.c_str(), cs.c_str(), src, unsigned(dets.size()));
 }
@@ -313,11 +344,11 @@ void run_camera(ModelCtx &m, const Settings &s, Buffers &b) {
     esp_camera_fb_return(fb);
     int64_t d = perf::now_us();
     if (!ok) continue;
-    tinyseek::preprocess(*m.plan, b.rgb, b.scratch, b.in);
+    preprocess_into(m, b.rgb, b.scratch, b.in);
     set_input(m, b.in);
     m.model->run();
     dets.clear();
-    tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, m.plan->lb, dets);
+    decode_output(m, dets);
     int64_t e = perf::now_us();
     if (i >= s.warmup) {
       t_cap.push_back(c - a);
@@ -361,7 +392,7 @@ void perf_eval_run() {
   const char *cols = "run,board,build,idf_version,espdl_version,jpeg_decoder,cpu_mhz";
   perf::append_line(g_run + "/bench.csv", std::string(cols) +
                     ",model,model_bytes,input_size,input_exponent,output_exponent,internal_kb,stage,runs,warmup,"
-                    "mean_ms,min_ms,max_ms,std_ms,fps");
+                    "mean_ms,min_ms,max_ms,std_ms,fps,input_dtype,output_dtype");
   perf::append_line(g_run + "/memory.csv", std::string(cols) +
                     ",model,point,internal_free,internal_min_free,internal_largest,psram_free,psram_min_free,"
                     "psram_largest");

@@ -196,6 +196,23 @@ def test_stage_card_layout_thresholds_and_replay(tmp_path, cli):
     assert json.loads((out / "card.json").read_text())["replay"]["category_id"] == 27
 
 
+def test_stage_w16a16_run_records_int16_io(tmp_path, cli):
+    run16 = fake_run(tmp_path / "runs" / "w16", meta_extra={"quant": "w16a16"})
+    (run16 / "model.info").write_text(INFO.replace("INT8, 1x192x192x3], exponents: [-6]", "INT16, 1x192x192x3], exponents: [-13]")
+                                      .replace("%641[INT8, 1x24x24x5], exponents: [-4]", "%641[INT16, 1x24x24x5], exponents: [-12]"))
+    out = tmp_path / "card"
+    detector_card.stage([(None, run16)], out, None, {}, None, {}, None, None, 0, None)
+    side = out / "sdcard" / "tinyseek" / "models" / "backpack.txt"
+    kv = read_kv(side)
+    assert (kv["input_dtype"], kv["output_dtype"], kv["input_exponent"], kv["output_exponent"], kv["quant"]) == \
+        ("INT16", "INT16", "-13", "-12", "w16a16")
+    meta = dict(line.split("=", 1) for line in run(cli, "meta", str(side)))
+    assert (meta["input_dtype"], meta["output_dtype"], meta["input_exponent"]) == ("INT16", "INT16", "-13")
+    (run16 / "model.info").write_text(INFO.replace("[INT8, 1x192x192x3]", "[FP32, 1x192x192x3]"))
+    with pytest.raises(ValueError):
+        detector_card.stage([(None, run16)], out, None, {}, None, {}, None, None, 0, None)
+
+
 def test_stage_refuses_credentials_and_bad_names(tmp_path):
     with pytest.raises(SystemExit):
         detector_card.parse_sets(["wifi_password=x"])

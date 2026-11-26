@@ -69,6 +69,7 @@ struct ModelMeta {
   float score_threshold = 0.05f;   // decode threshold (as in the PC evaluation, for AP)
   int max_detections = 20;
   float detect_threshold = 0.3f;   // "the object is there": LED, web highlight
+  std::string input_dtype, output_dtype;  // "INT8" / "INT16"; empty = not given
   std::string sha256, run;
 };
 ModelMeta parse_model_meta(const KeyValues &kv);

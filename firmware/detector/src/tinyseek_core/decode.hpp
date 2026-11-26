@@ -8,8 +8,8 @@
 // peaks over all classes are kept, then those scoring >= `score_threshold`.
 //   center = (cell + offset) * stride,  wh = exp(log_wh) * stride,
 //   original = (letterboxed - pad) / scale.
-// The output tensor is the ESP-DL int8 tensor, NHWC [1, G, G, num_classes + 4], with
-// channels [heatmap_logit..., log_w, log_h, off_x, off_y] and one power-of-two exponent.
+// The output tensor is the ESP-DL int8 (or int16) tensor, NHWC [1, G, G, num_classes + 4],
+// with channels [heatmap_logit..., log_w, log_h, off_x, off_y] and one power-of-two exponent.
 #pragma once
 
 #include <cstdint>
@@ -35,8 +35,9 @@ struct DecodeParams {
   int max_detections = 20;
 };
 
-// Appends detections, highest score first.
-void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb,
-            std::vector<Detection> &dets);
+// Appends detections, highest score first. The output tensor is int8, or int16 for a
+// w16a16 model (`exponent` is then the int16 tensor's exponent).
+void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb, std::vector<Detection> &dets);
+void decode(const int16_t *out, const DecodeParams &p, const Letterbox &lb, std::vector<Detection> &dets);
 
 }  // namespace tinyseek

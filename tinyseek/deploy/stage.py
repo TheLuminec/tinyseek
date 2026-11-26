@@ -30,7 +30,7 @@ from PIL import Image
 from tinyseek.config import fill, load_config, load_prompts
 from tinyseek.data.dataset import Record, load_coco_records
 from tinyseek.deploy.layout import CARD_ROOT, write_kv
-from tinyseek.deploy.reference import model_input
+from tinyseek.deploy.reference import io_bits, model_input
 from tinyseek.deploy.simulate import sha256
 
 NAME_RE = re.compile(r"^[a-z0-9_]{1,16}$")
@@ -114,6 +114,7 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
     size = meta["input_size"]
     if inp.shape != (1, size, size, 3):
         raise SystemExit(f"{run}: model.info input {inp.shape} does not match input_size {size}")
+    in_bits, out_bits = io_bits(inp.dtype), io_bits(out.dtype)  # int16 for a w16a16 export
     shutil.copyfile(run / "model.espdl", card / "models" / f"{name}.espdl")
     ev = cfg["eval"]
     info = {
@@ -130,6 +131,9 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
         "max_detections": ev["max_detections"],
         "input_exponent": inp.exponent,
         "output_exponent": out.exponent,
+        "input_dtype": inp.dtype,
+        "output_dtype": out.dtype,
+        "quant": meta.get("quant", "w8a8"),
         "espdl_bytes": (run / "model.espdl").stat().st_size,
         "espdl_sha256": sha256(run / "model.espdl"),
     }
@@ -147,10 +151,12 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
             raise SystemExit(f"{run}: rebuilt int8 graph differs from model.espdl; the simulation is no reference")
         if (sim.input_exponent, sim.output_exponent) != (inp.exponent, out.exponent):
             raise SystemExit(f"{run}: simulated exponents differ from model.info")
+        if (sim.bits, sim.bits) != (in_bits, out_bits):
+            raise SystemExit(f"{run}: simulated I/O width ({sim.bits} bits) differs from model.info")
     ppq_input_agrees = True
     for case_id, rec in cases:
         image = Image.open(rec.image_path).convert("RGB")
-        q_in, lb = model_input(image, size, inp.exponent)
+        q_in, lb = model_input(image, size, inp.exponent, in_bits)
         q_in.tofile(exp_dir / f"{case_id}_in.bin")
         (exp_dir / f"{case_id}_float.json").write_text(json.dumps(
             {"letterbox": [lb.scale, lb.pad_x, lb.pad_y], "detections": floats[rec.image_id]}, indent=1))

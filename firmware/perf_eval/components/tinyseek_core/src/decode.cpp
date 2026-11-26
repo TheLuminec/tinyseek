@@ -12,10 +12,13 @@ struct Peak {
   int flat;  // class * H * W + cell, the index torch.topk sees
 };
 
-}  // namespace
-
-void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb,
-            std::vector<Detection> &dets) {
+// T is the output tensor's element type. int8: exactly the code the board has run since
+// perf_eval. int16 (w16a16 models): with up to 65536 levels, nearby large logits can map
+// to the same float32 sigmoid (scores near 1), where the PC's `heat == max_pool(heat)`
+// counts both cells as peaks; so a larger neighbour suppresses only if its float score is
+// strictly larger. Scores below 0.5 never tie (float32 keeps their relative precision).
+template <typename T, bool kFloatTies>
+void decode_impl(const T *out, const DecodeParams &p, const Letterbox &lb, std::vector<Detection> &dets) {
   const int H = p.grid_h, W = p.grid_w, C = p.num_classes + 4;
   const float unit = std::ldexp(1.0f, p.exponent);
   auto at = [&](int y, int x, int ch) { return out[(y * W + x) * C + ch]; };
@@ -27,13 +30,18 @@ void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb,
   for (int c = 0; c < p.num_classes; ++c) {
     for (int y = 0; y < H; ++y) {
       for (int x = 0; x < W; ++x) {
-        const int8_t q = at(y, x, c);
+        const T q = at(y, x, c);
         bool peak = true;
         for (int dy = -1; dy <= 1 && peak; ++dy) {
           for (int dx = -1; dx <= 1; ++dx) {
             const int yy = y + dy, xx = x + dx;
             if (yy < 0 || yy >= H || xx < 0 || xx >= W) continue;  // -inf padding
-            if (at(yy, xx, c) > q) {
+            const T n = at(yy, xx, c);
+            if (n > q) {
+              if (kFloatTies && q * unit > 0.0f &&
+                  1.0f / (1.0f + std::exp(-(n * unit))) == 1.0f / (1.0f + std::exp(-(q * unit)))) {
+                continue;  // equal float scores: both are peaks, as on the PC
+              }
               peak = false;
               break;
             }
@@ -69,6 +77,16 @@ void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb,
     const float X1 = (x1 - lb.pad_x) / sx, Y1 = (y1 - lb.pad_y) / sx;
     dets.push_back({X0, Y0, X1 - X0, Y1 - Y0, pk.score, cls});
   }
+}
+
+}  // namespace
+
+void decode(const int8_t *out, const DecodeParams &p, const Letterbox &lb, std::vector<Detection> &dets) {
+  decode_impl<int8_t, false>(out, p, lb, dets);
+}
+
+void decode(const int16_t *out, const DecodeParams &p, const Letterbox &lb, std::vector<Detection> &dets) {
+  decode_impl<int16_t, true>(out, p, lb, dets);
 }
 
 }  // namespace tinyseek

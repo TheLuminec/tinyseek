@@ -62,10 +62,11 @@ int main(int argc, char **argv) {
     det::ModelMeta m = det::parse_model_meta(read_kv(argv[2]));
     std::printf("prompt=%s\ninput_size=%d\nstride=%d\nnum_classes=%d\nhas_exponents=%d\ninput_exponent=%d\n"
                 "output_exponent=%d\nmean=%g,%g,%g\nstd=%g,%g,%g\npad_value=%d\nscore_threshold=%g\n"
-                "max_detections=%d\ndetect_threshold=%g\nsha256=%s\n",
+                "max_detections=%d\ndetect_threshold=%g\nsha256=%s\ninput_dtype=%s\noutput_dtype=%s\n",
                 m.prompt.c_str(), m.input_size, m.stride, m.num_classes, m.has_exponents ? 1 : 0, m.input_exponent,
                 m.output_exponent, m.mean[0], m.mean[1], m.mean[2], m.std[0], m.std[1], m.std[2], m.pad_value,
-                m.score_threshold, m.max_detections, m.detect_threshold, m.sha256.c_str());
+                m.score_threshold, m.max_detections, m.detect_threshold, m.sha256.c_str(),
+                m.input_dtype.c_str(), m.output_dtype.c_str());
     return 0;
   }
   if (argc == 2 && !std::strcmp(argv[1], "frame")) {

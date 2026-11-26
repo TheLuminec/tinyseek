@@ -81,7 +81,8 @@ struct PreprocessPlan {
   ResampleAxis horiz, vert;           // kPillow
   BilinearAxis bx, by;                // kBilinear
   int ybox_first = 0, ybox_rows = 0;  // source rows the vertical pass reads (kPillow)
-  int8_t lut[3][256];                 // uint8 pixel -> quantized normalized value
+  int8_t lut[3][256];                 // uint8 pixel -> quantized normalized value (int8 input)
+  int16_t lut16[3][256];              // the same for an int16 input tensor (w16a16 models)
 };
 
 // `exponent` is the model input tensor's power-of-two exponent (value = q * 2^exponent).
@@ -92,11 +93,14 @@ void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponen
 // kBilinear: two horizontally resampled rows, uint16 RGB).
 size_t scratch_bytes(const PreprocessPlan &plan);
 
-// rgb: src_h x src_w x 3, R,G,B order, row-major. out: size x size x 3 int8 (HWC).
+// rgb: src_h x src_w x 3, R,G,B order, row-major. out: size x size x 3 (HWC), int8 for
+// an int8 model input, int16 for an int16 one (same resample, same exponent rule).
 // scratch: at least scratch_bytes(plan) bytes. Neither buffer may alias.
 void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out);
+void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int16_t *out);
 
-// The float->int8 step on its own, mirroring esp-ppq: clamp(floor(x / 2^exp + 0.5)).
+// The float->int step on its own, mirroring esp-ppq and esp-dl: clamp(floor(x / 2^exp + 0.5)).
 int8_t quantize_int8(float x, int exponent);
+int16_t quantize_int16(float x, int exponent);
 
 }  // namespace tinyseek

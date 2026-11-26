@@ -88,6 +88,17 @@ int8_t quantize_int8(float x, int exponent) {
   return static_cast<int8_t>(r);
 }
 
+int16_t quantize_int16(float x, int exponent) {
+  // The same rule at 16 bits: esp-dl 3.3.11 quantize<int16_t> (dl_tensor_base.cpp) is
+  // DL_CLIP(tool::round(x * inv_scale), -32768, 32767), and tool::round on the ESP32-S3 is
+  // round_half_up, floor(v + 0.5f) (dl_tool.hpp); esp-ppq uses ROUND_HALF_UP too.
+  float t = std::ldexp(x, -exponent);
+  float r = std::floor(t + 0.5f);
+  if (r < -32768.0f) return -32768;
+  if (r > 32767.0f) return 32767;
+  return static_cast<int16_t>(r);
+}
+
 Letterbox frame_letterbox(const Letterbox &decoded, int scale_shift) {
   Letterbox lb = decoded;
   lb.scale = std::ldexp(decoded.scale, -scale_shift);
@@ -146,6 +157,7 @@ void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponen
       float x = static_cast<float>(v) / 255.0f;
       x = (x - norm.mean[c]) / norm.std[c];
       plan.lut[c][v] = quantize_int8(x, exponent);
+      plan.lut16[c][v] = quantize_int16(x, exponent);
     }
   }
 }
@@ -157,8 +169,9 @@ size_t scratch_bytes(const PreprocessPlan &plan) {
 
 namespace {
 
-void fill_pad(const PreprocessPlan &plan, int8_t *out) {
-  const int8_t pad[3] = {plan.lut[0][114], plan.lut[1][114], plan.lut[2][114]};
+template <typename T>
+void fill_pad(const PreprocessPlan &plan, const T (*lut)[256], T *out) {
+  const T pad[3] = {lut[0][114], lut[1][114], lut[2][114]};
   for (int i = 0; i < plan.size * plan.size; ++i) {
     out[i * 3 + 0] = pad[0];
     out[i * 3 + 1] = pad[1];
@@ -181,7 +194,8 @@ void bilinear_row(const PreprocessPlan &plan, const uint8_t *row, uint16_t *dst)
   }
 }
 
-void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out) {
+template <typename T>
+void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, const T (*lut)[256], T *out) {
   const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
   const int last = plan.src_h - 1;
   const size_t stride = static_cast<size_t>(plan.src_w) * 3;
@@ -196,7 +210,7 @@ void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t
       tag[k] = y;
     }
   };
-  fill_pad(plan, out);
+  fill_pad(plan, lut, out);
   for (int yy = 0; yy < nh; ++yy) {
     const int y0 = plan.by.i0[yy];
     const int y1 = y0 < last ? y0 + 1 : last;
@@ -207,23 +221,19 @@ void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t
     const int k1 = tag[k0] == y1 ? k0 : 1 - k0;
     load(k1, y1);
     const uint16_t *r0 = rows[k0], *r1 = rows[k1];
-    int8_t *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
+    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
     for (int i = 0; i < nw * 3; i += 3) {
       for (int c = 0; c < 3; ++c) {
         const uint32_t v = r0[i + c] * g + r1[i + c] * f;
-        dst[i + c] = plan.lut[c][(v + 32768u) >> 16];
+        dst[i + c] = lut[c][(v + 32768u) >> 16];
       }
     }
   }
 }
 
-}  // namespace
-
-void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out) {
-  if (plan.resample == Resample::kBilinear) {
-    preprocess_bilinear(plan, rgb, scratch, out);
-    return;
-  }
+// Pillow's BILINEAR resample (kPillow). T is the input tensor's element type.
+template <typename T>
+void preprocess_pillow(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, const T (*lut)[256], T *out) {
   const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
   const bool need_h = nw != plan.src_w;
   const bool need_v = nh != plan.src_h;
@@ -258,18 +268,18 @@ void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch
   const int temp_w = need_h ? nw : plan.src_w;
 
   // Pad colour everywhere, then the resized image at (pad_x, pad_y).
-  fill_pad(plan, out);
+  fill_pad(plan, lut, out);
 
   // Vertical pass straight into the quantized canvas (no second uint8 buffer).
   const int ks = plan.vert.ksize;
   for (int yy = 0; yy < nh; ++yy) {
-    int8_t *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
+    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
     if (!need_v) {
       const uint8_t *src = temp + static_cast<size_t>(yy - temp_row0) * temp_w * 3;
       for (int xx = 0; xx < nw; ++xx) {
-        dst[xx * 3 + 0] = plan.lut[0][src[xx * 3 + 0]];
-        dst[xx * 3 + 1] = plan.lut[1][src[xx * 3 + 1]];
-        dst[xx * 3 + 2] = plan.lut[2][src[xx * 3 + 2]];
+        dst[xx * 3 + 0] = lut[0][src[xx * 3 + 0]];
+        dst[xx * 3 + 1] = lut[1][src[xx * 3 + 1]];
+        dst[xx * 3 + 2] = lut[2][src[xx * 3 + 2]];
       }
       continue;
     }
@@ -284,10 +294,28 @@ void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch
         s1 += p[1] * k[y];
         s2 += p[2] * k[y];
       }
-      dst[xx * 3 + 0] = plan.lut[0][clip8(s0)];
-      dst[xx * 3 + 1] = plan.lut[1][clip8(s1)];
-      dst[xx * 3 + 2] = plan.lut[2][clip8(s2)];
+      dst[xx * 3 + 0] = lut[0][clip8(s0)];
+      dst[xx * 3 + 1] = lut[1][clip8(s1)];
+      dst[xx * 3 + 2] = lut[2][clip8(s2)];
     }
+  }
+}
+
+}  // namespace
+
+void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out) {
+  if (plan.resample == Resample::kBilinear) {
+    preprocess_bilinear<int8_t>(plan, rgb, scratch, plan.lut, out);
+  } else {
+    preprocess_pillow<int8_t>(plan, rgb, scratch, plan.lut, out);
+  }
+}
+
+void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int16_t *out) {
+  if (plan.resample == Resample::kBilinear) {
+    preprocess_bilinear<int16_t>(plan, rgb, scratch, plan.lut16, out);
+  } else {
+    preprocess_pillow<int16_t>(plan, rgb, scratch, plan.lut16, out);
   }
 }
 

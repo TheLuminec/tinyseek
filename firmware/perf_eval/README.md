@@ -8,7 +8,7 @@ the SD card goes through these steps:
 1. **Load.** It records the load time and heap snapshots before and after the load.
 2. **Benchmark.** It times each stage separately over warm-up runs followed by N timed runs:
    JPEG decode of an 800x600 frame, preprocessing (frame to the letterboxed, normalised,
-   int8 input), inference, and post-processing (decode to boxes). Each stage reports
+   int8 or int16 input), inference, and post-processing (decode to boxes). Each stage reports
    mean, min, max and standard deviation in ms.
 3. **Parity.** Staged camera photos go through the board's pipeline twice: once from the
    PC-decoded pixels (`.rgb`) and once from the board's own JPEG decode. The tensors and
@@ -194,6 +194,7 @@ There is one row per model and stage. Each row carries these columns:
 | `run`, `board`, `build`, `idf_version`, `espdl_version`, `jpeg_decoder`, `cpu_mhz` | which run and setup produced the row. `build` is `esp-idf` or `arduino-esp32 <core version>`, and `jpeg_decoder` names the decoder used |
 | `model`, `model_bytes`, `input_size` | the model |
 | `input_exponent`, `output_exponent` | read from the loaded model |
+| `input_dtype`, `output_dtype` | `INT8`, or `INT16` for a w16a16 export; read from the loaded model (the last two columns) |
 | `internal_kb` | the ESP-DL internal-RAM limit used |
 | `stage` | which measurement this row is (table below) |
 | `runs`, `warmup` | timed and untimed run counts |
@@ -205,7 +206,7 @@ There is one row per model and stage. Each row carries these columns:
 | `load` | `dl::Model` construction: SD read, parse, parameter copy, memory planning (1 run) |
 | `preprocess_plan` | one-time resample coefficients and quantisation tables for 800x600 to S (1 run) |
 | `jpeg_decode` | `bench.jpg` 800x600 to RGB888, including the header size check (esp_new_jpeg here; see `jpeg_decoder`) |
-| `preprocess` | RGB888 to int8 NHWC letterboxed input (Pillow-exact resample, normalise, quantise) |
+| `preprocess` | RGB888 to int8 (or int16) NHWC letterboxed input (Pillow-exact resample, normalise, quantise) |
 | `inference` | `Model::run()` only; the input copy into the model is outside the timer |
 | `postprocess` | decode to boxes (peaks, top-k, threshold, letterbox inverse) |
 | `camera_capture` | `esp_camera_fb_get()` with 2 frame buffers and GRAB_LATEST, so it includes waiting for a frame |
@@ -284,6 +285,15 @@ which calls the evaluation code directly).
 - Decode matches `tinyseek.train.targets.decode` plus `Letterbox.inverse`, including peak
   ties and top-k.
 - esp-ppq's executor gives the same output for our int8 input as for the float input.
+- int16 models (w16a16 exports, `python -m tinyseek.train.export --quant w16a16`): the
+  firmware takes the input and output dtypes from the loaded model. tinyseek_core writes
+  an int16 input with the same rule ESP-DL 3.3.11 uses (`quantize<int16_t>`:
+  `floor(x / 2^exp + 0.5)` clipped to int16, from `round_half_up` in `dl_tool.hpp`), and
+  decodes an int16 output. Parity files are then little-endian int16. The stager records
+  `input_dtype`, `output_dtype` and `quant` in `models/<m>.txt` and `stage.json`.
+  `compare` reads the tensors in that type and counts differences in int16 steps. The
+  host tests check the C++ against the numpy reference and against the simulated w16a16
+  graph's cases (`runs/deploy/stage_int16_latency`). Not yet run on a board (2026-11-25).
   This confirms ROUND_HALF_UP and saturation on the input.
 - The JPEG header check (`jpeg_info`) reports the same size as Pillow, flags progressive
   files, and rejects non-JPEG and truncated input (2026-11-16).

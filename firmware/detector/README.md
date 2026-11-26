@@ -7,7 +7,7 @@ This Arduino sketch runs the detector continuously on the Freenove ESP32-S3 WROO
 camera frame (SVGA JPEG, frozen sensor settings)
   -> JPEG decode (ROM TJpgDec, optionally at 1/2, 1/4 or 1/8 size)
   -> letterbox + normalise + quantise into the ESP-DL input tensor
-  -> ESP-DL inference (the int8 model for the active prompt)
+  -> ESP-DL inference (the model for the active prompt: int8, or int16 I/O for a w16a16 export)
   -> CenterNet decode to boxes in 800x600 frame pixels
   -> LED, one JSON line on Serial, the web page (optional), the results file (replay)
 ```
@@ -95,7 +95,7 @@ card.
 ```
 /tinyseek/config.txt             settings (key=value, one per line, '#' starts a comment)
 /tinyseek/models/<prompt>.espdl  one ESP-DL model per prompt; the prompt is the file name
-/tinyseek/models/<prompt>.txt    its sidecar: input size, stride, exponents, mean/std,
+/tinyseek/models/<prompt>.txt    its sidecar: input size, stride, exponents, I/O dtypes, mean/std,
                                  score_threshold, max_detections, detect_threshold, sha256
 /tinyseek/replay/00000.jpg ...   replay photos (optional)
 /tinyseek/results/run_NNN/       written by the board in replay mode: run.txt, dets.jsonl,
@@ -146,7 +146,7 @@ measurements.
 {"type":"mem","point":"after_camera",...}
 {"type":"mem","point":"before_load",...}
 {"type":"mem","point":"after_load",...}
-{"type":"model","model":{"prompt":"backpack","input":192,"grid":24,"channels":5,"in_exp":-6,"out_exp":-4,"bytes":649728,"load_ms":920.0,"internal_kb":0,"score_threshold":0.050,"detect_threshold":0.300,"max_detections":20,"sha256":"075daca68fd835e5"}}
+{"type":"model","model":{"prompt":"backpack","input":192,"grid":24,"channels":5,"in_exp":-6,"out_exp":-4,"in_dtype":"INT8","out_dtype":"INT8","bytes":649728,"load_ms":920.0,"internal_kb":0,"score_threshold":0.050,"detect_threshold":0.300,"max_detections":20,"sha256":"075daca68fd835e5"}}
 {"type":"frame","n":1,"prompt":"backpack","src":"camera","w":800,"h":600,"ok":true,"t":{"cap":12.0,"dec":431.0,"pre":208.0,"inf":448.0,"post":0.40,"lat":1100.0,"period":0.0},"fps":0.00,"thr":0.300,"hit":true,"ndet":20,"dets":[{"s":0.812,"x":301.5,"y":222.0,"w":60.2,"h":81.0}]}
 ```
 

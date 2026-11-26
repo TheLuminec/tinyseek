@@ -7,8 +7,9 @@ Per model and case, four checks, each isolating one stage of the on-device pipel
 
 - preprocess: the board's input tensor from ``<id>.rgb`` against the PC's, byte for byte
   (same frame pixels, so any difference is the letterbox/normalize/quantize code);
-- model: the board's raw output for that input against esp-ppq's simulated int8 graph,
-  in int8 steps (only meaningful when the inputs matched);
+- model: the board's raw output for that input against esp-ppq's simulated graph, in
+  steps of the output tensor's type (int8, or int16 for a w16a16 export; only meaningful
+  when the inputs matched);
 - decode: the board's detections against the PC decode of the board's *own* output
   tensor (isolates the post-processing code);
 - end to end: detections from the board's own JPEG decode, and from the .rgb path,
@@ -93,8 +94,12 @@ def tensor_diff(a: np.ndarray, b: np.ndarray) -> dict:
             "within_1": float((d <= 1).mean())}
 
 
-def load(path: Path) -> np.ndarray | None:
-    return np.fromfile(path, np.int8) if path.exists() else None
+DTYPES = {"INT8": np.int8, "INT16": np.int16}
+
+
+def load(path: Path, dtype: str = "INT8") -> np.ndarray | None:
+    """A tensor file from the board or the PC: int8, or little-endian int16."""
+    return np.fromfile(path, DTYPES[dtype.upper()]) if path.exists() else None
 
 
 def compare_case(model: dict, case_id: str, expected: Path, board: Path, dets: dict) -> dict:
@@ -106,14 +111,16 @@ def compare_case(model: dict, case_id: str, expected: Path, board: Path, dets: d
     kw = {"num_classes": nc, "stride": int(model["stride"]), "score_threshold": float(model["score_threshold"]),
               "max_detections": int(model["max_detections"])}
     res: dict = {"case": case_id}
-    exp_in, exp_out = load(expected / f"{case_id}_in.bin"), load(expected / f"{case_id}_out.bin")
+    in_dt, out_dt = model.get("input_dtype", "INT8"), model.get("output_dtype", "INT8")
+    exp_in, exp_out = load(expected / f"{case_id}_in.bin", in_dt), load(expected / f"{case_id}_out.bin", out_dt)
     sim_dets = decode_output(exp_out.reshape(grid, grid, ch), out_exp, lb, **kw) if exp_out is not None else None
     floats = [Detection(*d["bbox"], d["score"]) for d in fl["detections"]]
     if sim_dets is not None:
         res["sim_vs_float"] = match(floats, sim_dets)
 
     for path in ("rgb", "jpg"):
-        b_in, b_out = load(board / f"{case_id}_{path}_in.bin"), load(board / f"{case_id}_{path}_out.bin")
+        b_in = load(board / f"{case_id}_{path}_in.bin", in_dt)
+        b_out = load(board / f"{case_id}_{path}_out.bin", out_dt)
         r: dict = {}
         if b_in is None or b_out is None:
             res[path] = {"missing": True}

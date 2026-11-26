@@ -157,12 +157,17 @@ def model_sidecar(prompt: str, run: Path, threshold: float | None) -> dict:
         "detect_threshold_source": source,
     }
     if (run / "model.info").exists():
+        from tinyseek.deploy.reference import io_bits
         from tinyseek.deploy.stage import graph_io
 
         inp, out = graph_io((run / "model.info").read_text())
         if inp.shape != (1, meta["input_size"], meta["input_size"], 3):
             raise SystemExit(f"{run}: model.info input {inp.shape} does not match input_size {meta['input_size']}")
-        info.update(input_exponent=inp.exponent, output_exponent=out.exponent)
+        for dtype in (inp.dtype, out.dtype):
+            io_bits(dtype)  # the board runs INT8 or INT16 I/O only
+        info.update(input_exponent=inp.exponent, output_exponent=out.exponent, input_dtype=inp.dtype,
+                    output_dtype=out.dtype)
+    info["quant"] = meta.get("quant", "w8a8")
     info.update(espdl_bytes=(run / "model.espdl").stat().st_size, espdl_sha256=sha256(run / "model.espdl"))
     return info
 

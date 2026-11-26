@@ -36,7 +36,10 @@ class Detection:
 
 
 def quantize(x: np.ndarray, exponent: int, bits: int = 8) -> np.ndarray:
-    """esp-ppq's power-of-two quantization for the ESP32-S3: floor(x / 2^exp + 0.5), saturated."""
+    """esp-ppq's power-of-two quantization for the ESP32-S3: floor(x / 2^exp + 0.5), saturated.
+
+    The same rule as esp-dl 3.3.11's quantize<int8_t/int16_t> (round_half_up, then clip to
+    the type's range), so it holds for int16 tensors (bits=16) as well."""
     lo, hi = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
     t = np.asarray(x, np.float32) / np.float32(2.0**exponent)
     return np.clip(np.floor(t + np.float32(0.5)), lo, hi).astype(np.int8 if bits == 8 else np.int16)
@@ -46,11 +49,19 @@ def dequantize(q: np.ndarray, exponent: int) -> np.ndarray:
     return q.astype(np.float32) * np.float32(2.0**exponent)
 
 
-def model_input(image: Image.Image, size: int, exponent: int) -> tuple[np.ndarray, Letterbox]:
-    """(size, size, 3) int8 HWC input for one RGB frame, plus its letterbox transform."""
+def model_input(image: Image.Image, size: int, exponent: int, bits: int = 8) -> tuple[np.ndarray, Letterbox]:
+    """(size, size, 3) int8 (bits=16: int16) HWC input for one RGB frame, plus its letterbox."""
     canvas, lb = letterbox(image.convert("RGB"), size)
     chw = to_tensor(canvas).numpy()
-    return quantize(chw.transpose(1, 2, 0), exponent), lb
+    return quantize(chw.transpose(1, 2, 0), exponent, bits), lb
+
+
+def io_bits(dtype: str) -> int:
+    """8 or 16 from an esp-ppq/ESP-DL dtype name ("INT8", "INT16")."""
+    d = dtype.upper()
+    if d not in ("INT8", "INT16"):
+        raise ValueError(f"model I/O must be INT8 or INT16, got {dtype!r}")
+    return 16 if d == "INT16" else 8
 
 
 # --- What the detector firmware feeds the model, per speed setting --------------------------
@@ -165,10 +176,11 @@ def bilinear_resize(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     return ((v + 32768) >> 16).astype(np.uint8)
 
 
-def preprocess_rgb(rgb: np.ndarray, size: int, exponent: int, resample: str = "pillow") -> tuple[np.ndarray, Letterbox]:
-    """Decoded frame -> (size, size, 3) int8 HWC input and its letterbox (in rgb's pixels)."""
+def preprocess_rgb(rgb: np.ndarray, size: int, exponent: int, resample: str = "pillow",
+                   bits: int = 8) -> tuple[np.ndarray, Letterbox]:
+    """Decoded frame -> (size, size, 3) int8 (or int16) HWC input and its letterbox (rgb's pixels)."""
     if resample == "pillow":
-        return model_input(Image.fromarray(rgb), size, exponent)
+        return model_input(Image.fromarray(rgb), size, exponent, bits)
     if resample != "bilinear":
         raise ValueError(f"resample must be one of {RESAMPLES}, got {resample!r}")
     h, w = rgb.shape[:2]
@@ -178,12 +190,12 @@ def preprocess_rgb(rgb: np.ndarray, size: int, exponent: int, resample: str = "p
     canvas = np.full((size, size, 3), 114, np.uint8)
     canvas[pad_y : pad_y + nh, pad_x : pad_x + nw] = bilinear_resize(rgb, nw, nh)
     chw = to_tensor(Image.fromarray(canvas)).numpy()
-    return quantize(chw.transpose(1, 2, 0), exponent), Letterbox(scale=scale, pad_x=pad_x, pad_y=pad_y)
+    return quantize(chw.transpose(1, 2, 0), exponent, bits), Letterbox(scale=scale, pad_x=pad_x, pad_y=pad_y)
 
 
 def board_input(jpeg: Path | str | bytes, size: int, exponent: int,
-                mode: BoardMode | str = "full") -> tuple[np.ndarray, Letterbox]:
-    """The int8 HWC tensor the detector firmware feeds ESP-DL for this camera JPEG.
+                mode: BoardMode | str = "full", bits: int = 8) -> tuple[np.ndarray, Letterbox]:
+    """The int8 (bits=16: int16, for w16a16 models) HWC tensor the detector feeds ESP-DL.
 
     Returns the tensor and the letterbox in the JPEG's own (full-frame) pixels, so
     ``decode_output(q_out, out_exp, lb)`` gives boxes in frame coordinates, exactly as the
@@ -192,7 +204,7 @@ def board_input(jpeg: Path | str | bytes, size: int, exponent: int,
     """
     m = BoardMode.parse(mode)
     rgb = board_rgb(jpeg, m.decode_scale, m.decoder)
-    q, lb = preprocess_rgb(rgb, size, exponent, m.resample)
+    q, lb = preprocess_rgb(rgb, size, exponent, m.resample, bits)
     return q, frame_letterbox(lb, m.decode_scale)
 
 
@@ -217,7 +229,7 @@ def decode_output(
     score_threshold: float = 0.05,
     max_detections: int = 20,
 ) -> list[Detection]:
-    """Board-format int8 output (G, G, C) -> detections in original pixels, as ``predict`` does."""
+    """Board-format int8 or int16 output (G, G, C) -> detections in original pixels, as ``predict`` does."""
     heads = nhwc_to_heads(dequantize(q_out, exponent), num_classes)
     boxes, scores, classes = decode(heads["heatmap"], heads["size"], heads["offset"], stride, max_detections)
     keep = scores[0] >= score_threshold

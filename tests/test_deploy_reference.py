@@ -88,6 +88,22 @@ def test_info_signature_ignores_generated_numbering():
     assert info_signature(a) != info_signature(CLIP_INFO.format(lo=37, hi=1, max=100))
 
 
+def test_info_signature_ignores_where_trailing_section_headers_land():
+    """The dump's 'values info:' and 'test ... value:' headers follow whichever block is
+    last; a w16a16 re-export put a different tensor last, which must not count as a change."""
+    head = INFO.split("initializers value:")[0]
+    w0 = "%w0, shape: [3], exponents: [-4],\nvalue: array([1, 2, 3])\n"
+    w1 = "%w1, shape: [2], exponents: [-12],\nvalue: array([5, 6])\n"
+    tail = "values info:\n%641[INT8, 1x24x24x5], exponents: [-4]\n%a[INT8, 1x24x24x3], exponents: [-3]\n" \
+           "test inputs value:\n\n\ntest outputs value:\n"
+    tail_swapped = "values info:\n%a[INT8, 1x24x24x3], exponents: [-3]\n%641[INT8, 1x24x24x5], exponents: [-4]\n" \
+                   "test inputs value:\n\n\ntest outputs value:\n"
+    a = head + "initializers value:\n" + w0 + w1 + tail
+    b = head + "initializers value:\n" + w1 + w0 + tail_swapped
+    assert info_signature(a) == info_signature(b)
+    assert info_signature(a) != info_signature(b.replace("exponents: [-3]", "exponents: [-2]"))
+
+
 def test_pick_cases_prefers_images_with_boxes_and_is_spread():
     recs = [Record(f"{i}.jpg", i, np.zeros((i % 2, 4), np.float32)) for i in range(20)]
     picked = pick_cases(recs, 4)

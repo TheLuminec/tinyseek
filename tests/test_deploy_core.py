@@ -8,6 +8,7 @@ plus Letterbox.inverse give. Real-image cases skip when the data or runs are abs
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 import torch
 from PIL import Image
 
+from tinyseek.data.transforms import Letterbox
 from tinyseek.deploy.reference import (
     Detection,
     bilinear_resize,
@@ -48,20 +50,25 @@ def cli(tmp_path_factory) -> Path:
 
 
 def run_preprocess(cli: Path, image: Image.Image, size: int, exponent: int, tmp: Path,
-                   resample: str | None = None) -> tuple[np.ndarray, list[str]]:
+                   resample: str | None = None, bits: int = 8) -> tuple[np.ndarray, list[str]]:
     rgb = tmp / "in.rgb"
     np.asarray(image.convert("RGB"), np.uint8).tofile(rgb)
     r = subprocess.run([str(cli), "preprocess", str(rgb), str(image.width), str(image.height), str(size),
-                        str(exponent), str(tmp / "out.bin"), *([resample] if resample else [])],
+                        str(exponent), str(tmp / "out.bin"), *([resample] if resample else []),
+                        *(["int16"] if bits == 16 else [])],
                        capture_output=True, text=True, check=True)
-    return np.fromfile(tmp / "out.bin", np.int8).reshape(size, size, 3), r.stdout.split()
+    dtype = np.int16 if bits == 16 else np.int8
+    return np.fromfile(tmp / "out.bin", dtype).reshape(size, size, 3), r.stdout.split()
 
 
 def run_decode(cli: Path, q_out: np.ndarray, exponent: int, lb, tmp: Path, thr: float = 0.05, k: int = 20) -> list[Detection]:
+    """C++ decode of an int8 or int16 output tensor (chosen by q_out's dtype)."""
     path = tmp / "out.bin"
-    q_out.astype(np.int8).tofile(path)
+    wide = q_out.dtype == np.int16
+    q_out.astype(np.int16 if wide else np.int8).tofile(path)
     r = subprocess.run([str(cli), "decode", str(path), str(q_out.shape[0]), str(q_out.shape[2] - 4), "8",
-                        str(exponent), repr(lb.scale), str(lb.pad_x), str(lb.pad_y), str(thr), str(k)],
+                        str(exponent), repr(lb.scale), str(lb.pad_x), str(lb.pad_y), str(thr), str(k),
+                        *(["int16"] if wide else [])],
                        capture_output=True, text=True, check=True)
     return [Detection(*map(float, line.split()[:5]), int(line.split()[5])) for line in r.stdout.splitlines()]
 
@@ -192,3 +199,84 @@ def test_jpeg_info_rejects_non_jpeg_and_truncated(cli, tmp_path):
 @pytest.mark.skipif(not CAMERA_PHOTO.exists(), reason="ESP32 camera photos not present")
 def test_jpeg_info_on_camera_photo(cli):
     assert run_jpeginfo(cli, CAMERA_PHOTO) == [*Image.open(CAMERA_PHOTO).size, 3, 0]
+
+
+# --- int16 model I/O (w16a16 exports) ----------------------------------------------------------
+
+@pytest.mark.parametrize("wh", [(800, 600), (400, 300), (200, 150), (333, 217)])
+@pytest.mark.parametrize("resample", ["pillow", "bilinear"])
+def test_int16_preprocess_matches_reference(cli, tmp_path, wh, resample):
+    """int16 input tensor (exponent -13, as the w16a16 export) against the numpy reference."""
+    rng = np.random.default_rng(sum(wh) + len(resample))
+    rgb = rng.integers(0, 256, (wh[1], wh[0], 3), dtype=np.uint8)
+    got, _ = run_preprocess(cli, Image.fromarray(rgb), 192, -13, tmp_path, resample, bits=16)
+    ref, _ = preprocess_rgb(rgb, 192, -13, resample, bits=16)
+    assert ref.dtype == np.int16 and np.array_equal(got, ref)
+    # Same pixels through the int8 path still give the int8 bytes (the paths share the resample).
+    got8, _ = run_preprocess(cli, Image.fromarray(rgb), 192, -6, tmp_path, resample)
+    assert np.array_equal(got8, preprocess_rgb(rgb, 192, -6, resample)[0])
+
+
+def test_int16_quantization_rounds_half_up_and_saturates():
+    x = np.array([0.5, -0.5, 1.5, -1.5, 1e9, -1e9], np.float32)
+    assert quantize(x, 0, 16).tolist() == [1, 0, 2, -1, 32767, -32768]
+    assert quantize(np.float32([1 / 8192 * 2.5]), -13, 16).tolist() == [3]  # 2.5 -> 3
+
+
+def test_int16_decode_matches_pc_including_saturated_ties(cli, tmp_path):
+    """With int16 logits, adjacent levels near score 1 share a float32 sigmoid; the PC's
+    `heat == max_pool(heat)` then keeps both cells, and so must the board."""
+    _, lb = model_input(Image.new("RGB", (800, 600)), 192, -6)
+    x = np.arange(28000, 32768, dtype=np.int16)
+    s = torch.sigmoid(torch.from_numpy(x.astype(np.float32) * 2.0**-12)).numpy()
+    ties = np.where(s[1:] == s[:-1])[0]
+    assert len(ties) >= 4
+    rng = np.random.default_rng(0)
+    q = rng.integers(-32768, -20000, (24, 24, 5)).astype(np.int16)
+    q[..., 1:] = rng.integers(-4000, 6000, (24, 24, 4))
+    for i, t in enumerate(ties[:4]):  # side-by-side equal-score pairs
+        q[2 + 4 * i, 3, 0], q[2 + 4 * i, 4, 0] = x[t], x[t + 1]
+    q[20, 20, 0], q[20, 21, 0] = 25000, 26000  # a plain pair: only the larger is a peak
+    q[0, 23, 0] = 30000
+    ref = decode_output(q, -12, lb)
+    assert len(ref) == 4 * 2 + 1 + 1
+    assert_same_dets(ref, run_decode(cli, q, -12, lb, tmp_path))
+    for seed in range(20):  # random scenes
+        r = np.random.default_rng(seed + 1)
+        q = r.integers(-32768, -20000, (24, 24, 5)).astype(np.int16)
+        q[..., 1:] = r.integers(-4000, 6000, (24, 24, 4))
+        idx = r.integers(0, 24, (10, 2))
+        q[idx[:, 0], idx[:, 1], 0] = r.integers(-12000, 32767, 10)
+        assert_same_dets(decode_output(q, -12, lb), run_decode(cli, q, -12, lb, tmp_path))
+
+
+INT16_STAGE = ROOT / "runs" / "deploy" / "stage_int16_latency"
+
+
+def _int16_models() -> list[dict]:
+    path = INT16_STAGE / "stage.json"
+    if not path.exists():
+        return []
+    return [m for m in json.loads(path.read_text())["models"] if m.get("input_dtype") == "INT16" and m.get("simulated")]
+
+
+@pytest.mark.skipif(not _int16_models(), reason="int16 stage (runs/deploy/stage_int16_latency) not present")
+def test_int16_parity_with_simulated_w16a16_graph(cli, tmp_path):
+    """The staged cases of the w16a16 model: the C++ preprocessing of each frame equals the
+    tensor the PC fed esp-ppq's simulated w16a16 graph (whose own float-input run agreed,
+    ppq_input_quantization_matches), and the C++ decode of that graph's int16 output equals
+    the PC decode."""
+    manifest = json.loads((INT16_STAGE / "stage.json").read_text())
+    for m in _int16_models():
+        assert m["ppq_input_quantization_matches"] is True
+        size, grid = m["input_size"], m["input_size"] // m["stride"]
+        exp_dir = INT16_STAGE / "expected" / m["name"]
+        for case in manifest["cases"][:4]:
+            rgb = np.fromfile(INT16_STAGE / "sdcard" / "tinyseek_eval" / "parity" / f"{case['id']}.rgb", np.uint8)
+            image = Image.fromarray(rgb.reshape(case["size"][1], case["size"][0], 3))
+            got, _ = run_preprocess(cli, image, size, m["input_exponent"], tmp_path, bits=16)
+            assert np.array_equal(got.reshape(-1), np.fromfile(exp_dir / f"{case['id']}_in.bin", np.int16))
+            out = np.fromfile(exp_dir / f"{case['id']}_out.bin", np.int16).reshape(grid, grid, m["num_classes"] + 4)
+            lb = Letterbox(*json.loads((exp_dir / f"{case['id']}_float.json").read_text())["letterbox"])
+            ref = decode_output(out, m["output_exponent"], lb)
+            assert_same_dets(ref, run_decode(cli, out, m["output_exponent"], lb, tmp_path))

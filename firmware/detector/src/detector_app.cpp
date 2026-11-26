@@ -81,6 +81,7 @@ struct Model {
   dl::Model *net = nullptr;
   dl::TensorBase *input = nullptr, *output = nullptr;
   int size = 0, grid = 0, channels = 0, in_exp = 0, out_exp = 0;
+  bool in16 = false, out16 = false;  // int16 I/O tensors (a w16a16 export), read from the model
   int internal_kb = 0;  // what ESP-DL was given (after clamping)
   double load_ms = 0;
   det::ModelMeta meta;
@@ -232,18 +233,22 @@ bool load_model(const std::string &prompt, std::string *err) {
   m.output = m.net->get_output();
   const std::vector<int> is = m.input->get_shape();
   const std::vector<int> os = m.output->get_shape();
-  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 || m.input->get_dtype() != dl::DATA_TYPE_INT8) {
-    *err = "model input must be int8 NHWC [1,S,S,3]";
+  const dl::dtype_t idt = m.input->get_dtype(), odt = m.output->get_dtype();
+  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 ||
+      (idt != dl::DATA_TYPE_INT8 && idt != dl::DATA_TYPE_INT16)) {
+    *err = "model input must be int8 or int16 NHWC [1,S,S,3]";
     return false;
   }
-  if (os.size() != 4 || os[1] != os[2] || os[3] < 5 || m.output->get_dtype() != dl::DATA_TYPE_INT8) {
-    *err = "model output must be int8 NHWC [1,G,G,C>=5]";
+  if (os.size() != 4 || os[1] != os[2] || os[3] < 5 || (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
+    *err = "model output must be int8 or int16 NHWC [1,G,G,C>=5]";
     return false;
   }
   m.size = is[1];
   m.grid = os[1];
   m.channels = os[3];
-  m.in_exp = m.input->get_exponent();  // read from the model, never assumed
+  m.in16 = idt == dl::DATA_TYPE_INT16;  // dtypes and exponents read from the model, never assumed
+  m.out16 = odt == dl::DATA_TYPE_INT16;
+  m.in_exp = m.input->get_exponent();
   m.out_exp = m.output->get_exponent();
   m.dp.grid_h = m.dp.grid_w = m.grid;
   m.dp.num_classes = m.channels - 4;
@@ -254,15 +259,21 @@ bool load_model(const std::string &prompt, std::string *err) {
   if (m.meta.has_exponents && (m.meta.input_exponent != m.in_exp || m.meta.output_exponent != m.out_exp)) {
     emit_msg("warning", prompt + ": exponents differ from " + prompt + ".txt (stale card?)");
   }
+  if ((!m.meta.input_dtype.empty() && m.meta.input_dtype != (m.in16 ? "INT16" : "INT8")) ||
+      (!m.meta.output_dtype.empty() && m.meta.output_dtype != (m.out16 ? "INT16" : "INT8"))) {
+    emit_msg("warning", prompt + ": I/O dtypes differ from " + prompt + ".txt (stale card?)");
+  }
   if (m.meta.input_size && m.meta.input_size != m.size) {
     emit_msg("warning", prompt + ": input size differs from " + prompt + ".txt (stale card?)");
   }
   char buf[512];
   snprintf(buf, sizeof(buf),
            "{\"prompt\":\"%s\",\"input\":%d,\"grid\":%d,\"channels\":%d,\"in_exp\":%d,\"out_exp\":%d,"
+           "\"in_dtype\":\"%s\",\"out_dtype\":\"%s\","
            "\"bytes\":%u,\"load_ms\":%.1f,\"internal_kb\":%d,\"score_threshold\":%.3f,\"detect_threshold\":%.3f,"
            "\"max_detections\":%d,\"sha256\":\"%s\"}",
-           det::json_escape(prompt).c_str(), m.size, m.grid, m.channels, m.in_exp, m.out_exp, unsigned(m.file_bytes),
+           det::json_escape(prompt).c_str(), m.size, m.grid, m.channels, m.in_exp, m.out_exp,
+           m.in16 ? "INT16" : "INT8", m.out16 ? "INT16" : "INT8", unsigned(m.file_bytes),
            m.load_ms, m.internal_kb, m.meta.score_threshold, m.meta.detect_threshold, m.meta.max_detections,
            det::json_escape(m.meta.sha256.substr(0, 16)).c_str());
   xSemaphoreTake(g.mu, portMAX_DELAY);
@@ -396,7 +407,9 @@ void write_run_txt() {
   t += std::string("\njpeg_decoder=") + perf::jpeg_decoder_label(g.decoder);
   t += "\nprompt=" + g.model.prompt + "\nmodel_sha256=" + g.model.meta.sha256 + "\nmodel_run=" + g.model.meta.run;
   t += "\ninput_size=" + std::to_string(g.model.size) + "\ninput_exponent=" + std::to_string(g.model.in_exp) +
-       "\noutput_exponent=" + std::to_string(g.model.out_exp) + "\ninternal_kb_effective=" +
+       "\noutput_exponent=" + std::to_string(g.model.out_exp) + "\ninput_dtype=" +
+       (g.model.in16 ? "INT16" : "INT8") + "\noutput_dtype=" + (g.model.out16 ? "INT16" : "INT8") +
+       "\ninternal_kb_effective=" +
        std::to_string(g.model.internal_kb);
   char thr[64];
   snprintf(thr, sizeof(thr), "\nscore_threshold=%.4f\nmax_detections=%d", g.model.meta.score_threshold,
@@ -486,12 +499,20 @@ void process(Slot &s) {
     const int64_t a = perf::now_us();
     // Straight into ESP-DL's input tensor: it shares the arena with the intermediates, so
     // it is rewritten before every run anyway (perf_eval copies into it instead).
-    tinyseek::preprocess(*g.plan, s.rgb, g.scratch, static_cast<int8_t *>(m.input->data));
+    if (m.in16) {
+      tinyseek::preprocess(*g.plan, s.rgb, g.scratch, static_cast<int16_t *>(m.input->data));
+    } else {
+      tinyseek::preprocess(*g.plan, s.rgb, g.scratch, static_cast<int8_t *>(m.input->data));
+    }
     const int64_t b = perf::now_us();
     m.net->run(g.s.multicore ? dl::RUNTIME_MODE_MULTI_CORE : dl::RUNTIME_MODE_SINGLE_CORE);
     const int64_t c = perf::now_us();
     const tinyseek::Letterbox lb = tinyseek::frame_letterbox(g.plan->lb, g.s.decode_scale);
-    tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, lb, g.dets);
+    if (m.out16) {
+      tinyseek::decode(static_cast<const int16_t *>(m.output->data), m.dp, lb, g.dets);
+    } else {
+      tinyseek::decode(static_cast<const int8_t *>(m.output->data), m.dp, lb, g.dets);
+    }
     const int64_t d = perf::now_us();
     r.t.pre = (b - a) / 1000.0;
     r.t.inf = (c - b) / 1000.0;

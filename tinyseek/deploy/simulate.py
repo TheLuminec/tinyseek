@@ -42,6 +42,9 @@ def info_signature(text: str) -> tuple[list[str], dict[str, str]]:
     marker = "initializers value:"
     text = _canonical_auto_names(text)
     head, _, values = text.partition(marker)
+    # Section headers carry no content but would glue onto whichever block happens to be
+    # dumped last before them (that order is not stable: seen on a w16a16 re-export).
+    values = re.sub(r"^(values info|test inputs value|test outputs value):\s*$", "", values, flags=re.MULTILINE)
     graph = sorted(line.strip() for line in head.splitlines() if line.strip())
     tensors = {}
     for block in re.split(r"\n(?=%)", values)[1:]:
@@ -84,12 +87,13 @@ class SimulatedModel:
     stride: int
     int16_ops: list[str]
     identical_to_deployed: bool
+    bits: int = 8  # I/O tensor width: 16 for a w16a16 export (export.json "quant")
 
     def run(self, q_in: np.ndarray) -> np.ndarray:
-        """(S, S, 3) int8 HWC input -> (G, G, C) int8 NHWC output, as the board should produce."""
+        """(S, S, 3) int8 (int16) HWC input -> (G, G, C) int8 (int16) NHWC output, as the board should."""
         x = torch.from_numpy(dequantize(q_in, self.input_exponent).transpose(2, 0, 1).copy())[None]
         out = self.executor(x)[0][0].detach().numpy()  # (C, G, G), already fake-quantized
-        return quantize(out.transpose(1, 2, 0), self.output_exponent)
+        return quantize(out.transpose(1, 2, 0), self.output_exponent, self.bits)
 
 
 def rebuild(run: Path, scratch: Path, calib_images: int = 512, target: str = "esp32s3") -> SimulatedModel:
@@ -156,4 +160,5 @@ def rebuild(run: Path, scratch: Path, calib_images: int = 512, target: str = "es
         stride=model.stride,
         int16_ops=int16_ops,
         identical_to_deployed=same_model(scratch / "model.info", run / "model.info"),
+        bits=bits,
     )

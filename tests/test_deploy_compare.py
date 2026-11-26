@@ -120,3 +120,49 @@ def test_compare_reads_firmware_bench_and_run_files(tmp_path, capsys):
     print_report(report)
     out = capsys.readouterr().out
     assert "build=arduino-esp32 3.3.12" in out and "inference" in out
+
+
+# The firmware appends the model's I/O dtypes to every bench.csv row (int16 for w16a16).
+BENCH_HEADER_IO = BENCH_HEADER + ",input_dtype,output_dtype"
+
+
+def test_compare_int16_model(tmp_path):
+    """A w16a16 model: int16 tensors on both sides, differences counted in int16 steps."""
+    rng = np.random.default_rng(2)
+    size, grid = 128, 16
+    exp_in = rng.integers(-20000, 20000, size * size * 3).astype(np.int16)
+    q = np.full((grid, grid, 5), -25000, np.int16)
+    q[..., 1:3], q[..., 3:] = 8000, 2000
+    q[4, 4, 0], q[10, 12, 0] = 12000, 6000
+    stage = tmp_path / "stage"
+    exp = stage / "expected" / "w16"
+    exp.mkdir(parents=True)
+    exp_in.tofile(exp / "c000_in.bin")
+    q.tofile(exp / "c000_out.bin")
+    lb = [0.16, 0, 16]
+    (exp / "c000_float.json").write_text(json.dumps({"letterbox": lb, "detections": []}))
+    model = {"name": "w16", "input_size": size, "stride": 8, "num_classes": 1, "output_exponent": -12,
+             "score_threshold": 0.05, "max_detections": 20, "input_dtype": "INT16", "output_dtype": "INT16"}
+    (stage / "stage.json").write_text(json.dumps({"models": [model], "cases": [{"id": "c000"}]}))
+    res = tmp_path / "run_001"
+    board = res / "parity" / "w16"
+    board.mkdir(parents=True)
+    b_out = q.copy()
+    b_out[4, 4, 1] += 300  # 300 int16 steps of log_w
+    from tinyseek.data.transforms import Letterbox
+
+    dets = decode_output(b_out, -12, Letterbox(*lb))
+    with (board / "dets.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(DETS_HEADER)
+        for path in ("rgb", "jpg"):
+            exp_in.tofile(board / f"c000_{path}_in.bin")
+            b_out.tofile(board / f"c000_{path}_out.bin")
+            for r, d in enumerate(dets):
+                w.writerow(["w16", "c000", path, r, d.x, d.y, d.w, d.h, d.score, d.cls])
+    (res / "bench.csv").write_text(BENCH_HEADER_IO + "\n" + ARDUINO_ROW + ",INT16,INT16\n")
+    report = compare(stage, res)
+    s = report["models"]["w16"]["summary"]
+    assert s["preprocess_exact"] == "1/1" and s["decode_identical"] == "2/2"
+    assert s["model_output_exact"] == "0/1" and s["model_output_max_abs_lsb"] == 300
+    assert len(dets) == 2 and report["bench"][0]["input_dtype"] == "INT16"
