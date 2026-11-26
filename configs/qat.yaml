@@ -1,0 +1,22 @@
+# Quantization-aware fine-tuning (tinyseek.train.qat) of a trained float run for ESP-DL int8.
+#   python -m tinyseek.train.qat --run runs/<prompt>/<condition>/seed<n> --out runs/<prompt>/qat_<condition>/seed<n>
+# The float run's config.yaml is copied to the new run with this section added; only `qat:` is read here.
+# Settings chosen on the dev slice of the 192 px far-object backpack run, seed 0 (2026-11-25):
+# 4 rounds x 2 epochs at lr 3e-4 with exponent jitter 0.1 gave dev int8 AP 0.833 (plain int8 0.659,
+# float 0.843) and rose every round; without jitter 0.824 with a dip to 0.644 in round 2.
+qat:
+  rounds: 4               # each round: quantize exactly as export does, then train the int8 graph
+  epochs_per_round: 2
+  lr: 3.0e-4              # Adam, cosine over all rounds after a short warmup (1e-4: 0.771, 1e-3: worse)
+  warmup_steps: 10
+  batch_size: 32
+  num_workers: 8
+  num_threads: 8
+  train_heads_only: false
+  calib_images: 512       # keep equal to tinyseek.train.export --calib-images
+  target: esp32s3
+  dev_images: 200         # images of the first training source held out of QAT, scored with teacher labels
+  dev_seed: 0
+  final_eval: true        # write eval.json (float scores of the QAT weights), as train.py does
+  select_best: true       # keep the round whose export-equivalent int8 graph scores best on dev
+  exp_jitter: 0.1         # chance per step that each activation exponent is shifted by +-1
