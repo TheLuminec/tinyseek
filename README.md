@@ -1,27 +1,54 @@
 # tinyseek
 
-Train a tiny, prompt-specific object detector for an ESP32-S3 camera board without
-hand-labeling anything: generate images with Stable Diffusion, label them with an
-open-vocabulary teacher (OWLv2 or Grounding DINO), and distill the labels into an int8
-student small enough to run on the microcontroller.
+Train a tiny object detector for one text prompt ("backpack", "cup", "person") and run it on
+an ESP32-S3 camera board, without hand-labeling training data:
 
-Target prompts: **person**, **cup**, **backpack** (each maps to a COCO category, so the
-student can be scored with standard COCO mAP@0.5).
+```
+text prompt
+  -> generate   scene descriptions -> images from a local text-to-image model (ComfyUI)
+  -> tone-match brightness / contrast / saturation pulled to the camera's (tinyseek.generate.camsim)
+  -> label      an open-vocabulary teacher (OWLv2) draws the boxes
+  -> distill    a 0.5 M-parameter CenterNet-style student, 192x192 input
+  -> quantize   quantization-aware training, int8 ESP-DL model (esp-ppq)
+  -> deploy     Arduino sketch on a Freenove ESP32-S3 CAM: boxes on Serial, an LED and a web page
+```
 
-## Status
+The only hand-labeled data are test photos from the board's own camera, used to measure the
+result and never to train.
 
-| Stage | Module | State |
-|---|---|---|
-| COCO subsets (train positives + negatives, full val) | `tinyseek.data.coco` | working |
-| SD 1.5 + LCM-LoRA generation | `tinyseek.generate.sample` | working; domain LoRA not trained yet |
-| Teacher labeling + threshold variants | `tinyseek.label.teacher` | working (OWLv2, Grounding DINO) |
-| Student training (4 conditions) | `tinyseek.train.train` | working |
-| mAP@0.5 (overall and by object size), ECE | `tinyseek.eval.evaluate` | working |
-| ESP32-S3 budget check | `tinyseek.train.budget` | working |
-| int8 ESP-DL export + int8 accuracy check | `tinyseek.train.export` | working |
-| ESP32 photo collection (interval capture to SD) | `firmware/capture` | written; not yet flashed |
-| ESP32-camera domain LoRA | `tinyseek.generate.train_lora` | v1 trained on 130 photos (one apartment) |
-| On-device detection firmware | `firmware/` | not started |
+## Results so far (2026-11-27)
+
+AP@0.5 on camera photos from sessions that no training step saw, mean of seeds 0-2 unless a
+seed is named. Float numbers are the PyTorch model; int8 is the exported graph, which the board
+reproduces bit for bit.
+
+| Prompt (test photos) | Training data | Input | Float | int8 after QAT |
+|---|---|---|---|---|
+| backpack (227 photos, 271 boxes) | COCO only, 6,910 images | 128 px | 0.161 | |
+| | 1,000 synthetic | 128 px | 0.340 | |
+| | 1,000 synthetic | 192 px | 0.470 | 0.431 |
+| | 2,000 synthetic | 192 px | 0.489 | 0.455 (seed 0: 0.497) |
+| cup (111 photos, 136 boxes) | COCO only, 7,500 images | 192 px | 0.124 | |
+| | 1,000 synthetic | 192 px | 0.046 | |
+| | 1,000 synthetic + COCO | 192 px | 0.187 | 0.180 (seed 0) |
+| person | in progress | | | |
+
+"Synthetic" here means far-object scene prompts through Qwen Image 2.1 Turbo, tone-matched,
+labeled by OWLv2 at threshold 0.3. Without quantization-aware training, plain int8 export
+loses 0.12-0.33 AP on backpack depending on the seed and erases cups (0.0001), so every deployed model goes through
+QAT.
+
+On the board (Freenove ESP32-S3 N16R8, arduino-esp32 3.3.12): inference takes 448 ms at
+192 px and a full frame 1.09 s (JPEG decode 431 ms, resize 208 ms), with 3.65 MB of PSRAM
+still free. The model's output on the board is identical to the PC simulation of the int8
+graph.
+
+What moved the number, in order of size: matching the camera's object scale in the prompt
+(small, far-away objects), a larger student input, tone matching, and more images. What did
+not help or hurt: simulating the lens distortion, a camera-style LoRA (its gain was leakage
+from test photos), training on the camera photos themselves, a ReLU backbone, longer
+training. `CLAUDE.md` keeps the dated record of every experiment with its config and summary
+file.
 
 ## Setup
 
@@ -35,85 +62,106 @@ pip install -e ".[generate,label,eval,export,dev]"
 pytest
 ```
 
-## Pipeline
+Image generation talks to a running ComfyUI server (`server:` in
+`configs/generate_comfy.yaml`, or `TINYSEEK_COMFY_URL`) that has the models of the workflow in
+`configs/comfy/` installed. Qwen Image 2.1 Turbo is under a research / non-commercial licence;
+`configs/comfy/z_image_turbo.json` is an Apache-2.0 alternative.
 
-All paths below are relative to the repo root; `data/` and `runs/` are gitignored.
+## Build a detector
+
+All paths are relative to the repo root; `data/` and `runs/` are gitignored. The example is
+backpack. Each step resumes if interrupted.
 
 ```bash
-# 1. Real data: COCO annotations, per-prompt subsets, and only the images they use (~4 GB)
-python -m tinyseek.data.coco --prompts person cup backpack
+# 1. Generate 1,000 scenes (about 26 s per 768x576 image on a 1080 Ti)
+python -m tinyseek.generate.comfy --config configs/generate_comfy_far.yaml --print-prompts 3   # preview
+python -m tinyseek.generate.comfy --config configs/generate_comfy_far.yaml num_images=1000
 
-# 1b. Camera domain LoRA from ESP32 photos (firmware/capture), copied to data/esp32cam/raw/session_*
-python -m tinyseek.data.esp32_prep data/esp32cam/raw --out data/esp32cam/manifest.json \
-    --exclude data/esp32cam/exclude.txt --coco data/esp32cam/kept_coco.json     # cull blur/duplicates
-python -m tinyseek.generate.caption --coco data/esp32cam/kept_coco.json \
-    --images data/esp32cam/raw --out data/esp32cam/captions.jsonl                 # BLIP + trigger
-python -m tinyseek.generate.train_lora --config configs/lora.yaml                 # ~50 min, 1080 Ti
-python -m tinyseek.generate.compare_lora --run runs/lora/esp32cam_v1 --teacher owlv2 \
-    --real data/esp32cam/kept_coco.json --real-images data/esp32cam/raw           # pick checkpoint/scale
-#    Draft box labels on the camera photos, to correct by hand into the test set:
-python -m tinyseek.label.teacher --teacher owlv2 --prompt cup --coco data/esp32cam/kept_coco.json \
-    --images data/esp32cam/raw --out data/labels/owlv2/esp32cam_cup_raw.json      # per prompt
-python -m tinyseek.label.merge --out data/esp32cam/draft_labels.json \
-    data/labels/owlv2/esp32cam_person_raw.json:0.15 data/labels/owlv2/esp32cam_cup_raw.json:0.2 \
-    data/labels/owlv2/esp32cam_backpack_raw.json:0.3
+# 2. Teacher labels: one raw pass, written with filtered copies at several thresholds
+python -m tinyseek.label.teacher --teacher owlv2 --prompt backpack \
+    --images data/synthetic/backpack/qwen21_turbo_far_v1 \
+    --out data/labels/owlv2/synth_qwen21_turbo_far_v1_backpack_raw.json
 
-# Hand review in the Avalon Monitor gallery (#/research/tinyseek; left-click box = good, right = bad):
-python -m tinyseek.eval.review_export real --out data/review/esp32cam.json         # or: synth --prompt cup --synth-set ...
-python ~/Projects/avalon-monitor/tools/gallery_push.py data/review/esp32cam.json   # venv python, for thumbnails
-python3 ~/Projects/avalon-monitor/tools/gallery_verdicts.py tinyseek real/esp32cam \
-    --out data/review/verdicts/real_esp32cam.json
-python -m tinyseek.label.curate --raw data/labels/owlv2/esp32cam_cup_raw.json \
-    --verdicts data/review/verdicts/real_esp32cam.json --threshold 0.2 \
-    --out data/labels/owlv2/esp32cam_cup_t0.2_curated.json   # good: kept, bad: dropped, rest thresholded
+# 3. Tone-match to the camera (boxes are carried over unchanged)
+python -m tinyseek.generate.camsim --preset only_tone \
+    --src data/synthetic/backpack/qwen21_turbo_far_v1 \
+    --labels data/labels/owlv2/synth_qwen21_turbo_far_v1_backpack_t0.3.json \
+    --out data/synthetic/backpack/qwen21_turbo_far_v1_only_tone \
+    --out-labels data/labels/owlv2/synth_qwen21_turbo_far_v1_only_tone_backpack_t0.3.json
 
-# 2. Synthetic images (resumable; ~2.4 s/image on a 1080 Ti in fp32; uses the domain LoRA)
-python -m tinyseek.generate.sample prompt=cup num_images=2000 synth_set=sd15_lcm_v0
+# 4. Train the student (about 15 min per seed), scored on the held-out camera sessions
+python -m tinyseek.train.budget --config configs/base.yaml          # does it fit the ESP32-S3?
+python -m tinyseek.train.sweep --conditions heldout_013_014 --prompts backpack --seeds 0 1 2 -- \
+    condition=my_backpack synth_set=qwen21_turbo_far_v1_only_tone 'label_variant=""'
 
-# 3. Teacher labels: one raw pass, then filtered copies at several thresholds
-python -m tinyseek.label.teacher --teacher owlv2 --prompt cup \
-    --images data/synthetic/cup/sd15_lcm_v0 --out data/labels/owlv2/synth_sd15_lcm_v0_cup_raw.json
-python -m tinyseek.label.teacher --teacher owlv2 --prompt cup \
-    --coco data/coco/subsets/train2017_cup.json --images data/coco/train2017 \
-    --out data/labels/owlv2/train2017_cup_raw.json
-#    Score a teacher against COCO ground truth (pick the teacher and threshold):
-python -m tinyseek.label.teacher --teacher grounding_dino --prompt cup \
-    --coco data/coco/subsets/val2017_cup.json --images data/coco/val2017 \
-    --gt data/coco/subsets/val2017_cup.json --out data/labels/grounding_dino/val2017_cup_raw.json
+# 5. Quantization-aware training and int8 export (CPU, about 20 min), then a detect threshold
+scripts/qat_run.sh runs/backpack/my_backpack/seed0 runs/backpack/my_backpack_qat/seed0
+python -m tinyseek.eval.threshold --run runs/backpack/my_backpack_qat/seed0 --write-meta
 
-# 4. Train the student under each condition (config overrides are key=value)
-python -m tinyseek.train.train --config configs/real_only.yaml    prompt=cup seed=0
-python -m tinyseek.train.train --config configs/teacher_real.yaml prompt=cup seed=0
-python -m tinyseek.train.train --config configs/synth_only.yaml   prompt=cup seed=0 synth_set=sd15_lcm_v0
-python -m tinyseek.train.train --config configs/synth_real.yaml   prompt=cup seed=0 synth_set=sd15_lcm_v0
-
-# 5. Check the ESP32-S3 budget, then quantize and export for ESP-DL
-python -m tinyseek.train.budget --config configs/base.yaml
-python -m tinyseek.train.export --run runs/cup/real_only/seed0
+# 6. SD card for the board
+python -m tinyseek.deploy.detector_card --model runs/backpack/my_backpack_qat/seed0 \
+    --out runs/deploy/detector_card
 ```
 
-Each training run writes `runs/<prompt>/<condition>/seed<seed>/` with the resolved
-`config.yaml` (including the git revision), `train_log.jsonl`, `last.pt`, and
-`eval.json`. The reported model is always the final epoch; COCO val2017 is the test
-set and is never used to pick checkpoints.
+Then build `firmware/detector` in the Arduino IDE and copy the card folder over:
+[`firmware/detector/README.md`](firmware/detector/README.md) has the IDE settings, the card
+layout, the serial commands and the web page. Several prompts can sit on one card; the board
+switches between them at run time.
 
-On a SLURM cluster, any step runs through `scripts/slurm/run.sbatch`:
+Each run writes `runs/<prompt>/<condition>/seed<seed>/` with the resolved `config.yaml`
+(including the git revision), `train_log.jsonl`, `last.pt` and `eval.json`; an export adds
+`model.espdl`, `model_meta.json` and `export.json` (float and int8 AP on the same photos).
+The reported model is always the final epoch.
+
+A new prompt needs an entry in `configs/prompts.yaml` and an `objects:` block in a generation
+config (the subjects and placements to sample); `configs/generate_comfy_cup.yaml` and
+`configs/generate_comfy_person.yaml` are examples. Check object size before generating a full
+set: the wide lens makes things small, and the size of the object in the synthetic frame was
+the largest single effect measured.
+
+Mixing data: `configs/heldout_013_014_synth2.yaml` trains on two synthetic sets, and the
+`*_synth_real.yaml` configs add the prompt's COCO subset (`python -m tinyseek.data.coco
+--prompts person cup backpack` downloads it, about 4 GB). COCO helped cup and did nothing
+for backpack.
+
+## Measuring honestly
+
+- Test photos come from the board's camera (`firmware/capture` saves them to SD), are culled
+  with `tinyseek.data.esp32_prep`, draft-labeled by the teacher and corrected by hand.
+- Whole capture sessions are held out per prompt (`tinyseek.data.split_sessions`): backpack
+  013/014, cup 016/017, person 006/011. Nothing that trains a generator, adapter or detector
+  may see those sessions. Detectors trained on images from a camera-style LoRA scored 0.236
+  when the LoRA had seen the test photos and 0.043 when it had not.
+- Always check `export.json` before deploying: the int8 number is the one the board computes.
+- `tinyseek.deploy.replay` and the detector sketch's replay mode score the board's own output
+  on the same photos.
+
+## Repository layout
+
+```
+configs/            base.yaml, one config per training condition, generation configs, comfy/ workflows
+tinyseek/
+  data/             COCO subsets, COCO-format dataset, augmentation, camera-photo culling, session splits
+  generate/         comfy.py (generation through ComfyUI), camsim.py (camera simulation),
+                    sample.py / train_lora.py / stylize.py (Stable Diffusion 1.5 + LoRA, earlier experiments)
+  label/            teacher labeling (OWLv2, Grounding DINO), threshold filtering, review merge
+  train/            student model, loss, training, sweep, budget check, QAT, ESP-DL export
+  eval/             AP@0.5 (also by object size), ECE, summaries, detect threshold
+  deploy/           bit-exact reference of the board's preprocessing and decoding, SD-card staging,
+                    board/PC comparison, Arduino sketch generation
+firmware/
+  capture/          interval photo capture to SD (data collection)
+  perf_eval/        ESP-IDF timing and parity test; perf_eval_arduino/ is the same as a sketch
+  detector/         the live detector sketch
+scripts/            experiment chains (generate -> label -> train -> summarize), qat_run.sh, slurm/
+tests/              pytest unit tests, including host builds of the firmware's portable C++
+```
+
+On a SLURM cluster any step runs through `scripts/slurm/run.sbatch`:
 
 ```bash
 sbatch -A <PROJECT_ACCOUNT> scripts/slurm/run.sbatch tinyseek.train.train --config configs/synth_only.yaml prompt=cup
 ```
-
-## Training conditions
-
-| Config | Training data | Labels |
-|---|---|---|
-| `real_only` | COCO train2017 subset | human (COCO) |
-| `teacher_real` | same COCO images | teacher |
-| `synth_only` | Stable Diffusion images | teacher |
-| `synth_real` | SD images + COCO subset | teacher + human |
-
-The data-efficiency sweep uses `max_images` on the synthetic source (see `configs/smoke.yaml`
-for the syntax).
 
 ## Student
 
@@ -122,10 +170,11 @@ CenterNet-style single-stride detector: a MobileNetV2-0.5 backbone (ImageNet-pre
 8/16/32 features into one 24x24 head at 192x192 input. It outputs a per-class heatmap plus box
 size and center offset, so on-device post-processing is a 3x3 local-maximum test and a few
 `expf` calls; no anchors or NMS. Default config: 0.50M parameters (~475 KB int8), ~1.3 MB
-peak activations, 71M MACs (`tinyseek.train.budget`). The input was 128x128 (~0.6 MB, 31M MACs)
-until 2026-11-15; `model.input_size=128` restores it.
+peak activations, 71M MACs (`tinyseek.train.budget`). `model.input_size=128` gives the
+earlier 128x128 model (31M MACs, 198 ms on the board).
 
 ## Data and secrets
 
-Nothing under `data/` or `runs/` is committed. Everything is regenerated by the commands
-above. Wi-Fi credentials for the firmware go in a gitignored `secrets.h`.
+Nothing under `data/` or `runs/` is committed; everything is regenerated by the commands
+above. Camera photos stay off the repository. Wi-Fi credentials for the detector live only
+in `config.txt` on the SD card.
