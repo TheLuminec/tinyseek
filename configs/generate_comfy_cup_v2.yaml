@@ -1,0 +1,76 @@
+# A second cup set, built on what the first one (qwen21_turbo_cup_v1) showed:
+#   - Size. Reviewed cup boxes from camera sessions outside the held-out pair 016/017 cover a
+#     median 0.62 % of the frame (10th-90th percentile 0.06-3.44 %, 280 boxes); cup_v1 came out
+#     at a median 0.36 % (0.10-1.27 %) and the teacher missed the cup in 143 of 1,000 images.
+#     This set keeps the far framings and adds nearer ones, so the upper half of the camera's
+#     range is covered and fewer cups are too small for the teacher to label.
+#   - Count. Camera photos with a cup hold 2.6 cups on average; cup_v1 has 1.25 per image.
+#     Some subjects here are pairs and groups.
+#   - Variety. More cup kinds (party cups, mugs, glasses, disposable cups) and the wider homes
+#     and lighting of generate_comfy_far_v2.yaml, with a new seed.
+base: generate_comfy_far_v2.yaml
+prompt: cup
+seed: 4
+synth_set: qwen21_turbo_cup_v2
+
+fields:
+  framing:
+    - far away at the back of the room, taking up only a very small part of the picture
+    - on the far side of the room, tiny in the frame
+    - small and far off to the left side, across the room from the camera
+    - small and far off to the right side, across the room from the camera
+    - in the middle distance but small, easy to overlook, not the focus of the picture
+    - far away and partly hidden behind other things
+    - small in the picture and well off to the left side
+    - small in the picture and well off to the right side
+    - roughly in the middle distance, not the focus of the picture
+    - a few steps from the camera, off-centre in the lower half of the picture
+    - a few steps from the camera, off to one side, small but plain to see
+    - fairly near the camera, low in the picture and off-centre, still only a small part of the view
+    - near the camera at the edge of the picture, with the rest of the room stretching away behind it
+    - close to the camera, about an arm's length away and off to one side, with most of the picture still showing the room
+
+objects:
+  cup:
+    subject:
+      - A white ceramic mug
+      - A blue coffee mug
+      - A teal ceramic mug
+      - A black mug
+      - A yellow mug
+      - A grey stoneware mug
+      - A striped mug
+      - A red plastic party cup
+      - A blue plastic party cup
+      - A green plastic cup
+      - A clear drinking glass
+      - A tall glass of water
+      - A glass tumbler half full of orange juice
+      - A paper takeaway coffee cup with a lid
+      - A plain white paper cup
+      - A stainless steel travel mug
+      - A clear plastic cup with a straw
+      - A frosted plastic tumbler
+      - A pair of coffee mugs side by side
+      - A pair of red plastic party cups
+      - A group of three plastic cups in different colours
+      - A row of three drinking glasses
+      - A mug with a paper cup next to it
+    placement:
+      - is on a table
+      - is on the edge of a desk next to a keyboard
+      - is on a shelf
+      - is on a windowsill
+      - is on a kitchen counter
+      - is on the floor next to a chair
+      - is on a stack of books
+      - is on a low coffee table
+      - is on a bedside table
+      - is on a workbench
+      - is next to a sink
+      - is on top of a cabinet
+      - is on the seat of a chair
+      - is on the arm of a sofa
+      - is on a dining table among plates
+      - is on the floor against the wall
+      - is on a stair step

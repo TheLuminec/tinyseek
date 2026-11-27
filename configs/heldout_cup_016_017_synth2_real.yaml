@@ -1,0 +1,9 @@
+# Cup, two synthetic sets plus real COCO images, scored on the cup sessions 016/017.
+# Pass synth_set=<a> synth_set_b=<b> label_variant="".
+base: heldout_cup_016_017_synth_real.yaml
+condition: heldout_synth2_real
+train:
+  sources:
+    - {ann: "labels/{teacher}/synth_{synth_set}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set}"}
+    - {ann: "labels/{teacher}/synth_{synth_set_b}_{prompt}_t{teacher_threshold}{label_variant}.json", images: "synthetic/{prompt}/{synth_set_b}"}
+    - {ann: "coco/subsets/train2017_{prompt}.json", images: coco/train2017}
