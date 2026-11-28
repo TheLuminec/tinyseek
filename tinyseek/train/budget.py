@@ -20,12 +20,16 @@ from torch import nn
 from tinyseek.config import load_config
 from tinyseek.train.model import build_model
 
-# Freenove/generic ESP32-S3 N16R8: 8 MB PSRAM, 16 MB flash. Leave room for the camera
-# frame buffers (2x QVGA RGB565 = 300 KB), Wi-Fi, and the display/stream path.
+# Freenove/generic ESP32-S3 N16R8: 8 MB PSRAM, 16 MB flash. Measured on the board (2026-11-16,
+# 192 px model, 1.33 MB estimated peak activations, 800x600 frame decoded to RGB888): PSRAM
+# never below 3.65 MB free, and 448 ms of inference for 71 M MACs, i.e. about 6.3 ms per
+# million MACs. The activation budget keeps roughly 2 MB of PSRAM free by that measurement
+# (a 256 px model, 2.36 MB, passes; 320 px, 3.69 MB, does not). The MAC budget is about one
+# second of inference; larger inputs than 192 px have not been run on the board yet.
 PSRAM_BYTES = 8 * 1024 * 1024
-ACTIVATION_BUDGET = 2 * 1024 * 1024
+ACTIVATION_BUDGET = 3 * 1024 * 1024
 WEIGHT_BUDGET = 3 * 1024 * 1024
-MACS_BUDGET = 150e6  # very roughly ~100-200 ms on the S3 with ESP-DL int8 kernels
+MACS_BUDGET = 150e6
 
 
 @dataclass
