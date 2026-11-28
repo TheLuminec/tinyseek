@@ -8,6 +8,7 @@ plus Letterbox.inverse give. Real-image cases skip when the data or runs are abs
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import pytest
 import torch
 from PIL import Image
 
+from tinyseek.config import input_wh
 from tinyseek.data.transforms import Letterbox
 from tinyseek.deploy.reference import (
     Detection,
@@ -49,24 +51,29 @@ def cli(tmp_path_factory) -> Path:
     return out
 
 
-def run_preprocess(cli: Path, image: Image.Image, size: int, exponent: int, tmp: Path,
-                   resample: str | None = None, bits: int = 8) -> tuple[np.ndarray, list[str]]:
+def run_preprocess(cli: Path, image: Image.Image, size, exponent: int, tmp: Path,
+                   resample: str | None = None, bits: int = 8, pad: int | None = None) -> tuple[np.ndarray, list[str]]:
+    """``size`` is an int (square, passed to the CLI as before) or (width, height) ("WxH")."""
     rgb = tmp / "in.rgb"
     np.asarray(image.convert("RGB"), np.uint8).tofile(rgb)
-    r = subprocess.run([str(cli), "preprocess", str(rgb), str(image.width), str(image.height), str(size),
+    in_w, in_h = input_wh(size)
+    arg = str(size) if isinstance(size, int) else f"{in_w}x{in_h}"
+    r = subprocess.run([str(cli), "preprocess", str(rgb), str(image.width), str(image.height), arg,
                         str(exponent), str(tmp / "out.bin"), *([resample] if resample else []),
-                        *(["int16"] if bits == 16 else [])],
+                        *(["int16"] if bits == 16 else []), *([f"pad={pad}"] if pad is not None else [])],
                        capture_output=True, text=True, check=True)
     dtype = np.int16 if bits == 16 else np.int8
-    return np.fromfile(tmp / "out.bin", dtype).reshape(size, size, 3), r.stdout.split()
+    return np.fromfile(tmp / "out.bin", dtype).reshape(in_h, in_w, 3), r.stdout.split()
 
 
 def run_decode(cli: Path, q_out: np.ndarray, exponent: int, lb, tmp: Path, thr: float = 0.05, k: int = 20) -> list[Detection]:
-    """C++ decode of an int8 or int16 output tensor (chosen by q_out's dtype)."""
+    """C++ decode of an int8 or int16 output tensor (chosen by q_out's dtype); (rows, columns, C)."""
     path = tmp / "out.bin"
     wide = q_out.dtype == np.int16
     q_out.astype(np.int16 if wide else np.int8).tofile(path)
-    r = subprocess.run([str(cli), "decode", str(path), str(q_out.shape[0]), str(q_out.shape[2] - 4), "8",
+    rows, cols = q_out.shape[:2]
+    grid = str(rows) if rows == cols else f"{cols}x{rows}"
+    r = subprocess.run([str(cli), "decode", str(path), grid, str(q_out.shape[2] - 4), "8",
                         str(exponent), repr(lb.scale), str(lb.pad_x), str(lb.pad_y), str(thr), str(k),
                         *(["int16"] if wide else [])],
                        capture_output=True, text=True, check=True)
@@ -339,3 +346,166 @@ def test_decode_clamps_degenerate_box_sizes(cli, tmp_path):
     for a, b in zip(sorted(ref, key=lambda d: d.w), sorted(got, key=lambda d: d.w)):
         assert abs(a.score - b.score) < 1e-6
         assert np.allclose([a.x, a.y, a.w, a.h], [b.x, b.y, b.w, b.h], rtol=1e-6, atol=1e-3)
+
+
+# --- rectangular model inputs (2026-11-28) -------------------------------------------------------
+
+def _sha(*arrays: np.ndarray) -> str:
+    h = hashlib.sha256()
+    for a in arrays:
+        a = np.ascontiguousarray(a)
+        h.update(str(a.dtype).encode() + str(a.shape).encode() + a.tobytes())
+    return h.hexdigest()[:16]
+
+
+def _frame(seed: int, w: int, h: int) -> np.ndarray:
+    return np.random.default_rng(seed).integers(0, 256, (h, w, 3), dtype=np.uint8)
+
+
+# Square inputs, pinned with the code as it was before rectangular inputs existed (commit
+# 40b4c70): (kind, frame seed, frame (w, h), input size) -> (hash of the input tensor, scale,
+# pad_x, pad_y). "pillow16" is an int16 tensor at exponent -13, "pad0" a pad value of 0; the
+# others are int8 at exponent -6. The tensors come from Pillow's BILINEAR resize, which the
+# firmware reproduces bit for bit, so these also change if Pillow's resampling ever does.
+SQUARE_PINS = {
+    ("pillow", 0, (800, 600), 128): ("af50ef765c5b9d24", 0.16, 0, 16),
+    ("bilinear", 0, (800, 600), 128): ("038ea2b5a91b15f8", 0.16, 0, 16),
+    ("pillow", 0, (800, 600), 192): ("bdf7a80469399bc3", 0.24, 0, 24),
+    ("bilinear", 0, (800, 600), 192): ("24762dbb1bd47f31", 0.24, 0, 24),
+    ("pillow16", 0, (800, 600), 192): ("fef7b980247a0655", 0.24, 0, 24),
+    ("pad0", 0, (800, 600), 192): ("82043b9f6f34256f", 0.24, 0, 24),
+    ("pillow", 1, (333, 217), 128): ("01dad3ae8b9b35c0", 0.3843843843843844, 0, 22),
+    ("bilinear", 1, (333, 217), 128): ("ad0e27d085820a61", 0.3843843843843844, 0, 22),
+    ("pillow", 1, (333, 217), 192): ("20b61485ec243283", 0.5765765765765766, 0, 34),
+    ("bilinear", 1, (333, 217), 192): ("3dad4085ef1ac63f", 0.5765765765765766, 0, 34),
+    ("pillow16", 1, (333, 217), 192): ("eee907964325c4b3", 0.5765765765765766, 0, 34),
+    ("pad0", 1, (333, 217), 192): ("10418f7761217655", 0.5765765765765766, 0, 34),
+    ("pillow", 2, (64, 200), 128): ("d86536dd584ed432", 0.64, 44, 0),
+    ("bilinear", 2, (64, 200), 128): ("7fba3a58074df139", 0.64, 44, 0),
+    ("pillow", 2, (64, 200), 192): ("a8d6f90c143b2442", 0.96, 66, 0),
+    ("bilinear", 2, (64, 200), 192): ("0ab832a771cc5965", 0.96, 66, 0),
+    ("pillow16", 2, (64, 200), 192): ("5b8a707e7bd8f3f0", 0.96, 66, 0),
+    ("pad0", 2, (64, 200), 192): ("dab274716715a07d", 0.96, 66, 0),
+}
+_PIN_ARGS = {  # kind -> (resample, exponent, bits, pad value)
+    "pillow": ("pillow", -6, 8, None), "bilinear": ("bilinear", -6, 8, None),
+    "pillow16": ("pillow", -13, 16, None), "pad0": ("pillow", -6, 8, 0),
+}
+
+
+@pytest.mark.parametrize("pin", sorted(SQUARE_PINS), ids=lambda p: f"{p[0]}-{p[2][0]}x{p[2][1]}-{p[3]}")
+def test_square_preprocessing_is_unchanged_by_rectangular_support(cli, tmp_path, pin):
+    """Square inputs give the bytes they gave before: the PC reference and the firmware C++."""
+    kind, seed, (w, h), size = pin
+    want_hash, want_scale, want_pad_x, want_pad_y = SQUARE_PINS[pin]
+    resample, exponent, bits, pad = _PIN_ARGS[kind]
+    rgb = _frame(seed, w, h)
+    ref, lb = preprocess_rgb(rgb, size, exponent, resample, bits, 114 if pad is None else pad)
+    assert (_sha(ref), lb.scale, lb.pad_x, lb.pad_y) == (want_hash, want_scale, want_pad_x, want_pad_y)
+    got, (scale, pad_x, pad_y, _, _) = run_preprocess(cli, Image.fromarray(rgb), size, exponent, tmp_path, resample,
+                                                      bits, pad)
+    assert (_sha(got), float(scale), int(pad_x), int(pad_y)) == (want_hash, want_scale, want_pad_x, want_pad_y)
+    # A square size given as (size, size) is the same input.
+    assert np.array_equal(preprocess_rgb(rgb, (size, size), exponent, resample, bits, 114 if pad is None else pad)[0], ref)
+
+
+RECT_SIZES = [(256, 192), (288, 224), (192, 256)]  # (width, height); the last one is taller than wide
+
+
+@pytest.mark.parametrize("size", RECT_SIZES)
+@pytest.mark.parametrize("wh", [(800, 600), (400, 300), (200, 150), (100, 75), (333, 217), (64, 200), (640, 360),
+                                (256, 192)])
+@pytest.mark.parametrize("resample", ["pillow", "bilinear"])
+def test_rect_preprocess_matches_pc_reference(cli, tmp_path, size, wh, resample):
+    """A rectangular model input: firmware C++ against the PC reference, byte for byte, with
+    the same letterbox, for 4:3 frames (full, 1/2, 1/4, 1/8 decode) and other shapes."""
+    rgb = _frame(sum(wh) + size[0], *wh)
+    got, (scale, pad_x, pad_y, nw, nh) = run_preprocess(cli, Image.fromarray(rgb), size, -6, tmp_path, resample)
+    ref, lb = preprocess_rgb(rgb, size, -6, resample)
+    assert ref.shape == (size[1], size[0], 3) and ref.dtype == np.int8  # rows = height, columns = width
+    assert np.array_equal(got, ref)
+    assert (float(scale), int(pad_x), int(pad_y)) == (lb.scale, lb.pad_x, lb.pad_y)
+    assert lb.scale == min(size[0] / wh[0], size[1] / wh[1])
+    assert 0 <= lb.pad_x and lb.pad_x + int(nw) <= size[0] and 0 <= lb.pad_y and lb.pad_y + int(nh) <= size[1]
+    assert int(nw) == size[0] or int(nh) == size[1]  # the frame fills one axis of the input
+
+
+def test_rect_letterbox_of_the_camera_frame(cli, tmp_path):
+    """800x600 into 256x192 has no padding; into 288x224 it is 288x216 with 4 rows above and below."""
+    rgb = _frame(5, 800, 600)
+    for size, want in (((256, 192), (0.32, 0, 0, 256, 192)), ((288, 224), (0.36, 0, 4, 288, 216))):
+        got, geometry = run_preprocess(cli, Image.fromarray(rgb), size, -6, tmp_path)
+        assert (float(geometry[0]), *map(int, geometry[1:])) == want  # scale, pad_x, pad_y, resized w, h
+        ref, lb = model_input(Image.fromarray(rgb), size, -6)
+        assert np.array_equal(got, ref) and (lb.scale, lb.pad_x, lb.pad_y) == want[:3]
+    pad = quantize(np.float32([(114 / 255 - 0.485) / 0.229]), -6)[0]  # the pad colour's red channel
+    assert (got[:4, :, 0] == pad).all() and (got[-4:, :, 0] == pad).all() and not (got[4:-4, :, 0] == pad).all()
+
+
+@pytest.mark.parametrize("size", RECT_SIZES)
+@pytest.mark.parametrize("resample", ["pillow", "bilinear"])
+def test_rect_int16_and_pad_value_match_reference(cli, tmp_path, size, resample):
+    rgb = _frame(size[0] + len(resample), 400, 300)
+    got, _ = run_preprocess(cli, Image.fromarray(rgb), size, -13, tmp_path, resample, bits=16)
+    ref, _ = preprocess_rgb(rgb, size, -13, resample, bits=16)
+    assert ref.dtype == np.int16 and ref.shape == (size[1], size[0], 3) and np.array_equal(got, ref)
+    rgb = _frame(size[1], 300, 300)  # a square frame: padded on the long axis of the input
+    got, _ = run_preprocess(cli, Image.fromarray(rgb), size, -6, tmp_path, resample, pad=0)
+    ref, _ = preprocess_rgb(rgb, size, -6, resample, pad_value=0)
+    assert np.array_equal(got, ref)
+    assert not np.array_equal(ref, preprocess_rgb(rgb, size, -6, resample)[0])
+
+
+def _rect_scene(seed: int, rows: int, cols: int, dtype=np.int8) -> np.ndarray:
+    r = np.random.default_rng(seed)
+    if dtype == np.int8:
+        q = r.integers(-128, -60, (rows, cols, 5)).astype(np.int8)
+        q[..., 1:] = r.integers(-20, 30, (rows, cols, 4))
+        peaks = r.integers(-40, 127, 12)
+    else:
+        q = r.integers(-32768, -20000, (rows, cols, 5)).astype(np.int16)
+        q[..., 1:] = r.integers(-4000, 6000, (rows, cols, 4))
+        peaks = r.integers(-12000, 32767, 12)
+    q[r.integers(0, rows, 12), r.integers(0, cols, 12), 0] = peaks
+    return q
+
+
+@pytest.mark.parametrize("size", RECT_SIZES)
+def test_rect_decode_matches_pc(cli, tmp_path, size):
+    """Decode on a non-square grid (rows = height / 8, columns = width / 8): planted peaks in
+    every corner and on a plateau, then random scenes, int8 and int16."""
+    rows, cols = size[1] // 8, size[0] // 8
+    _, lb = model_input(Image.new("RGB", (800, 600)), size, -6)
+    q = _rect_scene(0, rows, cols)
+    q[..., 0] = np.minimum(q[..., 0], -61)  # background only, then the planted peaks
+    for r, c, v in ((0, 0, 50), (0, cols - 1, 60), (rows - 1, 0, 40), (rows - 1, cols - 1, 30),
+                    (rows // 2, cols // 2, 25), (rows // 2, cols // 2 + 1, 25)):
+        q[r, c, 0] = v
+    ref = decode_output(q, -4, lb)
+    assert len(ref) == 6
+    assert_same_dets(ref, run_decode(cli, q, -4, lb, tmp_path))
+    for seed in range(1, 9):
+        q = _rect_scene(seed, rows, cols)
+        assert_same_dets(decode_output(q, -4, lb), run_decode(cli, q, -4, lb, tmp_path))
+        q16 = _rect_scene(seed, rows, cols, np.int16)
+        assert_same_dets(decode_output(q16, -12, lb), run_decode(cli, q16, -12, lb, tmp_path))
+
+
+@pytest.mark.parametrize("size", [(256, 192), (288, 224)])
+def test_rect_boxes_come_out_in_frame_pixels(cli, tmp_path, size):
+    """One object at a known place in an 800x600 frame: its cell, offset and log size are
+    written into the output tensor, and both decoders return the frame box."""
+    _, lb = model_input(Image.new("RGB", (800, 600)), size, -6)
+    box = np.array([[610.0, 130.0, 730.0, 400.0]])  # x0, y0, x1, y1 in frame pixels, right of centre
+    x0, y0, x1, y1 = lb.forward(box)[0] / 8  # in cells
+    col, row = int((x0 + x1) / 2), int((y0 + y1) / 2)
+    assert col > size[1] // 8 - 1  # a column index that no row index of this grid reaches
+    q = np.full((size[1] // 8, size[0] // 8, 5), -128, np.int8)
+    q[row, col] = quantize(np.float32([4.0, np.log(x1 - x0), np.log(y1 - y0), (x0 + x1) / 2 - col,
+                                       (y0 + y1) / 2 - row]), -4)
+    for dets in (decode_output(q, -4, lb), run_decode(cli, q, -4, lb, tmp_path)):
+        assert len(dets) == 1
+        d = dets[0]
+        # 1/16 steps of the int8 output: a few frame pixels of rounding in log size and offset
+        assert np.allclose([d.x, d.y, d.x + d.w, d.y + d.h], box[0], atol=4.0)
+        assert abs(d.score - 1 / (1 + np.exp(-4.0))) < 1e-6

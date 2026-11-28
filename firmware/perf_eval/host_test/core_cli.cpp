@@ -2,11 +2,13 @@
 // pipeline on this machine (tests/test_deploy_core.py builds and runs it).
 //
 //   core_cli preprocess <rgb888 file> <w> <h> <size> <exponent> <out.bin> [pillow|bilinear] [int16] [pad=<v>]
-//       writes size*size*3 int8 (or int16, little-endian) HWC and prints
+//       <size> is the model input: "192" (square) or "256x192" (width x height). Writes
+//       height*width*3 int8 (or int16, little-endian) HWC and prints
 //       "scale pad_x pad_y resized_w resized_h"
 //   core_cli decode <NHWC file> <grid> <num_classes> <stride> <exponent>
 //                   <scale> <pad_x> <pad_y> <score_threshold> <max_detections> [int16]
-//       reads an int8 (or int16) tensor; prints one "x y w h score cls" line per detection
+//       <grid> is "24" (square) or "32x24" (columns x rows). Reads an int8 (or int16)
+//       tensor; prints one "x y w h score cls" line per detection
 //   core_cli jpeginfo <file.jpg>
 //       prints "width height components progressive" (or "invalid", exit 1)
 //   core_cli kv <file>
@@ -33,8 +35,17 @@ static std::vector<uint8_t> read_file(const char *path) {
   return std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {});
 }
 
+// "192" -> 192, 192; "256x192" -> 256 (width or columns), 192 (height or rows).
+static void parse_wh(const char *text, int *w, int *h) {
+  *w = *h = std::atoi(text);
+  const char *x = std::strchr(text, 'x');
+  if (x) *h = std::atoi(x + 1);
+}
+
 static int run_preprocess(char **a) {
-  const int w = std::atoi(a[1]), h = std::atoi(a[2]), size = std::atoi(a[3]);
+  const int w = std::atoi(a[1]), h = std::atoi(a[2]);
+  int in_w = 0, in_h = 0;
+  parse_wh(a[3], &in_w, &in_h);
   const int exponent = std::atoi(a[4]);
   std::vector<uint8_t> rgb = read_file(a[0]);
   if (rgb.size() != static_cast<size_t>(w) * h * 3) {
@@ -56,10 +67,10 @@ static int run_preprocess(char **a) {
     }
   }
   static tinyseek::PreprocessPlan plan;  // 768-byte LUT: keep it off the stack
-  tinyseek::make_plan(plan, w, h, size, exponent, norm,
+  tinyseek::make_plan(plan, w, h, in_w, in_h, exponent, norm,
                       bilinear ? tinyseek::Resample::kBilinear : tinyseek::Resample::kPillow);
   std::vector<uint8_t> scratch(tinyseek::scratch_bytes(plan));
-  const size_t n = static_cast<size_t>(size) * size * 3;
+  const size_t n = static_cast<size_t>(in_w) * in_h * 3;
   if (wide) {
     std::vector<int16_t> out(n);
     tinyseek::preprocess(plan, rgb.data(), scratch.data(), out.data());
@@ -77,7 +88,7 @@ static int run_preprocess(char **a) {
 static int run_decode(char **a) {
   std::vector<uint8_t> raw = read_file(a[0]);
   tinyseek::DecodeParams p;
-  p.grid_h = p.grid_w = std::atoi(a[1]);
+  parse_wh(a[1], &p.grid_w, &p.grid_h);
   p.num_classes = std::atoi(a[2]);
   p.stride = std::atoi(a[3]);
   p.exponent = std::atoi(a[4]);

@@ -49,15 +49,22 @@ struct ModelCtx {
   size_t file_bytes = 0;
   dl::Model *model = nullptr;
   dl::TensorBase *input = nullptr, *output = nullptr;
-  int size = 0, grid = 0, channels = 0, in_exp = 0, out_exp = 0;
+  // Input pixels and output cells, read from the model: NHWC [1, in_h, in_w, 3] and
+  // [1, grid_h, grid_w, channels]. Square models have in_w == in_h.
+  int in_w = 0, in_h = 0, grid_w = 0, grid_h = 0, channels = 0, in_exp = 0, out_exp = 0;
   bool in16 = false, out16 = false;  // int16 input/output tensors (w16a16 export), from the model
   tinyseek::PreprocessPlan *plan = nullptr;
   tinyseek::DecodeParams dp;
   tinyseek::NormalizeParams norm;
-  size_t in_bytes() const { return size_t(size) * size * 3 * (in16 ? 2 : 1); }
-  size_t out_bytes() const { return size_t(grid) * grid * channels * (out16 ? 2 : 1); }
+  size_t in_bytes() const { return size_t(in_w) * in_h * 3 * (in16 ? 2 : 1); }
+  size_t out_bytes() const { return size_t(grid_w) * grid_h * channels * (out16 ? 2 : 1); }
   const char *in_dtype() const { return in16 ? "INT16" : "INT8"; }
   const char *out_dtype() const { return out16 ? "INT16" : "INT8"; }
+  // The bench.csv input_size column: "192" for a square model (as always), "256x192"
+  // (width x height) for a rectangular one.
+  std::string size_text() const {
+    return in_w == in_h ? std::to_string(in_w) : std::to_string(in_w) + "x" + std::to_string(in_h);
+  }
 };
 
 // Preprocess into `dst` and decode the model output, in whichever element type the model has.
@@ -87,9 +94,9 @@ void fail(const char *why) {
 
 void bench_row(const ModelCtx &m, const Settings &s, const char *stage, const perf::Stats &st, double fps = 0) {
   char buf[512];
-  snprintf(buf, sizeof(buf), "%s,%s,%u,%d,%d,%d,%d,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%s,%s", g_meta.c_str(),
-           m.name.c_str(), unsigned(m.file_bytes), m.size, m.in_exp, m.out_exp, s.internal_kb, stage, st.n, s.warmup,
-           st.mean_ms, st.min_ms, st.max_ms, st.std_ms, fps, m.in_dtype(), m.out_dtype());
+  snprintf(buf, sizeof(buf), "%s,%s,%u,%s,%d,%d,%d,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%s,%s", g_meta.c_str(),
+           m.name.c_str(), unsigned(m.file_bytes), m.size_text().c_str(), m.in_exp, m.out_exp, s.internal_kb, stage,
+           st.n, s.warmup, st.mean_ms, st.min_ms, st.max_ms, st.std_ms, fps, m.in_dtype(), m.out_dtype());
   perf::append_line(g_run + "/bench.csv", buf);
   perf::logln("%-6s %-15s n=%-4d mean %8.3f ms  min %8.3f  max %8.3f  std %7.3f%s", m.name.c_str(), stage, st.n,
            st.mean_ms, st.min_ms, st.max_ms, st.std_ms, fps > 0 ? "  (fps below)" : "");
@@ -159,25 +166,35 @@ bool load_model(ModelCtx &m, const Settings &s) {
   const std::vector<int> is = m.input->get_shape();
   const std::vector<int> os = m.output->get_shape();
   const dl::dtype_t idt = m.input->get_dtype(), odt = m.output->get_dtype();
-  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 ||
+  if (is.size() != 4 || is[0] != 1 || is[1] < 1 || is[2] < 1 || is[3] != 3 ||
       (idt != dl::DATA_TYPE_INT8 && idt != dl::DATA_TYPE_INT16)) {
-    perf::logln("ERROR: %s: input must be int8 or int16 NHWC [1,S,S,3]", m.name.c_str());
+    perf::logln("ERROR: %s: input must be int8 or int16 NHWC [1,H,W,3]", m.name.c_str());
     return false;
   }
-  if (os.size() != 4 || os[1] != os[2] || (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
-    perf::logln("ERROR: %s: output must be int8 or int16 NHWC [1,G,G,C]", m.name.c_str());
+  if (os.size() != 4 || os[1] < 1 || os[2] < 1 || (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
+    perf::logln("ERROR: %s: output must be int8 or int16 NHWC [1,GH,GW,C]", m.name.c_str());
     return false;
   }
-  m.size = is[1];
-  m.grid = os[1];
+  // One stride for both axes: the grid has the input's aspect (always true for a square
+  // input with a square grid, the only shape accepted before rectangular inputs).
+  if (is[1] * os[2] != is[2] * os[1]) {
+    perf::logln("ERROR: %s: input [1,%d,%d,3] and output grid %dx%d differ in aspect", m.name.c_str(), is[1], is[2],
+                os[1], os[2]);
+    return false;
+  }
+  m.in_h = is[1];  // NHWC: height first
+  m.in_w = is[2];
+  m.grid_h = os[1];
+  m.grid_w = os[2];
   m.channels = os[3];
   m.in16 = idt == dl::DATA_TYPE_INT16;  // dtypes and exponents read from the model, never assumed
   m.out16 = odt == dl::DATA_TYPE_INT16;
   m.in_exp = m.input->get_exponent();
   m.out_exp = m.output->get_exponent();
-  m.dp.grid_h = m.dp.grid_w = m.grid;
+  m.dp.grid_h = m.grid_h;
+  m.dp.grid_w = m.grid_w;
   m.dp.num_classes = m.channels - 4;
-  m.dp.stride = m.size / m.grid;
+  m.dp.stride = m.in_h / m.grid_h;  // the same on both axes (checked above)
   m.dp.exponent = m.out_exp;
   m.dp.score_threshold = perf::kv_float(meta, "score_threshold", 0.05f);
   m.dp.max_detections = perf::kv_int(meta, "max_detections", 20);
@@ -189,15 +206,15 @@ bool load_model(ModelCtx &m, const Settings &s) {
       (meta.count("output_dtype") && meta["output_dtype"] != m.out_dtype())) {
     perf::logln("WARNING: %s: I/O dtypes differ from the staged model.txt (stale card?)", m.name.c_str());
   }
-  perf::logln("%s: input [1,%d,%d,3] exp %d, output [1,%d,%d,%d] exp %d, %u bytes", m.name.c_str(), m.size, m.size,
-           m.in_exp, m.grid, m.grid, m.channels, m.out_exp, unsigned(m.file_bytes));
+  perf::logln("%s: input [1,%d,%d,3] exp %d, output [1,%d,%d,%d] exp %d, %u bytes", m.name.c_str(), m.in_h, m.in_w,
+           m.in_exp, m.grid_h, m.grid_w, m.channels, m.out_exp, unsigned(m.file_bytes));
   perf::logln("%s: input %s, output %s", m.name.c_str(), m.in_dtype(), m.out_dtype());
 
   // The plan (resample coefficients, quantisation tables) is per resolution and built
   // once; it is timed as its own row, not as part of per-frame preprocessing.
   m.plan = new tinyseek::PreprocessPlan();
   int64_t t2 = perf::now_us();
-  tinyseek::make_plan(*m.plan, kFrameW, kFrameH, m.size, m.in_exp, m.norm);
+  tinyseek::make_plan(*m.plan, kFrameW, kFrameH, m.in_w, m.in_h, m.in_exp, m.norm);
   int64_t t3 = perf::now_us();
   bench_row(m, s, "load", perf::summarize({t1 - t0}));
   bench_row(m, s, "preprocess_plan", perf::summarize({t3 - t2}));

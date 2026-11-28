@@ -81,7 +81,9 @@ struct Model {
   size_t file_bytes = 0;
   dl::Model *net = nullptr;
   dl::TensorBase *input = nullptr, *output = nullptr;
-  int size = 0, grid = 0, channels = 0, in_exp = 0, out_exp = 0;
+  // Input pixels and output cells, read from the model: NHWC [1, in_h, in_w, 3] and
+  // [1, grid_h, grid_w, channels]. Square models have in_w == in_h.
+  int in_w = 0, in_h = 0, grid_w = 0, grid_h = 0, channels = 0, in_exp = 0, out_exp = 0;
   bool in16 = false, out16 = false;  // int16 I/O tensors (a w16a16 export), read from the model
   int internal_kb = 0;  // what ESP-DL was given (after clamping)
   double load_ms = 0;
@@ -237,25 +239,35 @@ bool load_model(const std::string &prompt, std::string *err) {
   const std::vector<int> is = m.input->get_shape();
   const std::vector<int> os = m.output->get_shape();
   const dl::dtype_t idt = m.input->get_dtype(), odt = m.output->get_dtype();
-  if (is.size() != 4 || is[0] != 1 || is[1] != is[2] || is[3] != 3 ||
+  if (is.size() != 4 || is[0] != 1 || is[1] < 1 || is[2] < 1 || is[3] != 3 ||
       (idt != dl::DATA_TYPE_INT8 && idt != dl::DATA_TYPE_INT16)) {
-    *err = "model input must be int8 or int16 NHWC [1,S,S,3]";
+    *err = "model input must be int8 or int16 NHWC [1,H,W,3]";
     return false;
   }
-  if (os.size() != 4 || os[1] != os[2] || os[3] < 5 || (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
-    *err = "model output must be int8 or int16 NHWC [1,G,G,C>=5]";
+  if (os.size() != 4 || os[1] < 1 || os[2] < 1 || os[3] < 5 ||
+      (odt != dl::DATA_TYPE_INT8 && odt != dl::DATA_TYPE_INT16)) {
+    *err = "model output must be int8 or int16 NHWC [1,GH,GW,C>=5]";
     return false;
   }
-  m.size = is[1];
-  m.grid = os[1];
+  // One stride for both axes: the grid has the input's aspect (always true for a square
+  // input with a square grid, the only shape accepted before rectangular inputs).
+  if (is[1] * os[2] != is[2] * os[1]) {
+    *err = "model input and output grid differ in aspect";
+    return false;
+  }
+  m.in_h = is[1];  // NHWC: height first
+  m.in_w = is[2];
+  m.grid_h = os[1];
+  m.grid_w = os[2];
   m.channels = os[3];
   m.in16 = idt == dl::DATA_TYPE_INT16;  // dtypes and exponents read from the model, never assumed
   m.out16 = odt == dl::DATA_TYPE_INT16;
   m.in_exp = m.input->get_exponent();
   m.out_exp = m.output->get_exponent();
-  m.dp.grid_h = m.dp.grid_w = m.grid;
+  m.dp.grid_h = m.grid_h;
+  m.dp.grid_w = m.grid_w;
   m.dp.num_classes = m.channels - 4;
-  m.dp.stride = m.size / m.grid;
+  m.dp.stride = m.in_h / m.grid_h;  // the same on both axes (checked above)
   m.dp.exponent = m.out_exp;
   m.dp.score_threshold = m.meta.score_threshold;
   m.dp.max_detections = m.meta.max_detections;
@@ -266,16 +278,18 @@ bool load_model(const std::string &prompt, std::string *err) {
       (!m.meta.output_dtype.empty() && m.meta.output_dtype != (m.out16 ? "INT16" : "INT8"))) {
     emit_msg("warning", prompt + ": I/O dtypes differ from " + prompt + ".txt (stale card?)");
   }
-  if (m.meta.input_size && m.meta.input_size != m.size) {
+  if (m.meta.input_w && (m.meta.input_w != m.in_w || m.meta.input_h != m.in_h)) {
     emit_msg("warning", prompt + ": input size differs from " + prompt + ".txt (stale card?)");
   }
+  // "input":S,"grid":G for a square model; input_w/input_h/grid_w/grid_h for a rectangular one.
+  const std::string shape = det::model_shape_json(m.in_w, m.in_h, m.grid_w, m.grid_h);
   char buf[512];
   snprintf(buf, sizeof(buf),
-           "{\"prompt\":\"%s\",\"input\":%d,\"grid\":%d,\"channels\":%d,\"in_exp\":%d,\"out_exp\":%d,"
+           "{\"prompt\":\"%s\",%s,\"channels\":%d,\"in_exp\":%d,\"out_exp\":%d,"
            "\"in_dtype\":\"%s\",\"out_dtype\":\"%s\","
            "\"bytes\":%u,\"load_ms\":%.1f,\"internal_kb\":%d,\"score_threshold\":%.3f,\"detect_threshold\":%.3f,"
            "\"max_detections\":%d,\"sha256\":\"%s\"}",
-           det::json_escape(prompt).c_str(), m.size, m.grid, m.channels, m.in_exp, m.out_exp,
+           det::json_escape(prompt).c_str(), shape.c_str(), m.channels, m.in_exp, m.out_exp,
            m.in16 ? "INT16" : "INT8", m.out16 ? "INT16" : "INT8", unsigned(m.file_bytes),
            m.load_ms, m.internal_kb, m.meta.score_threshold, m.meta.detect_threshold, m.meta.max_detections,
            det::json_escape(m.meta.sha256.substr(0, 16)).c_str());
@@ -292,7 +306,7 @@ bool load_model(const std::string &prompt, std::string *err) {
 bool ensure_plan(int w, int h) {
   if (g.plan && w == g.plan_w && h == g.plan_h) return true;
   if (!g.plan) g.plan = new tinyseek::PreprocessPlan();
-  tinyseek::make_plan(*g.plan, w, h, g.model.size, g.model.in_exp, g.model.norm,
+  tinyseek::make_plan(*g.plan, w, h, g.model.in_w, g.model.in_h, g.model.in_exp, g.model.norm,
                       g.s.bilinear ? tinyseek::Resample::kBilinear : tinyseek::Resample::kPillow);
   const size_t need = tinyseek::scratch_bytes(*g.plan);
   if (need > g.scratch_cap) {
@@ -409,7 +423,8 @@ void write_run_txt() {
   t += "\nsdk_settings=" + perf::sdk_settings() + "\ncpu_mhz=" + std::to_string(perf::cpu_mhz());
   t += std::string("\njpeg_decoder=") + perf::jpeg_decoder_label(g.decoder);
   t += "\nprompt=" + g.model.prompt + "\nmodel_sha256=" + g.model.meta.sha256 + "\nmodel_run=" + g.model.meta.run;
-  t += "\ninput_size=" + std::to_string(g.model.size) + "\ninput_exponent=" + std::to_string(g.model.in_exp) +
+  // input_size=S for a square model, input_width=W and input_height=H for a rectangular one.
+  t += "\n" + det::model_shape_kv(g.model.in_w, g.model.in_h) + "\ninput_exponent=" + std::to_string(g.model.in_exp) +
        "\noutput_exponent=" + std::to_string(g.model.out_exp) + "\ninput_dtype=" +
        (g.model.in16 ? "INT16" : "INT8") + "\noutput_dtype=" + (g.model.out16 ? "INT16" : "INT8") +
        "\ninternal_kb_effective=" +

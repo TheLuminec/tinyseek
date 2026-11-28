@@ -264,7 +264,12 @@ ModelMeta parse_model_meta(const KeyValues &kv) {
   int v = 0;
   float f = 0;
   m.prompt = get("prompt");
-  if (parse_int(get("input_size"), 1, 4096, &v)) m.input_size = v;
+  if (parse_int(get("input_size"), 1, 4096, &v)) m.input_w = m.input_h = v;  // square
+  int iw = 0, ih = 0;
+  if (parse_int(get("input_width"), 1, 4096, &iw) && parse_int(get("input_height"), 1, 4096, &ih)) {
+    m.input_w = iw;  // rectangular (both keys are needed)
+    m.input_h = ih;
+  }
   if (parse_int(get("stride"), 1, 64, &v)) m.stride = v;
   if (parse_int(get("num_classes"), 1, 1000, &v)) m.num_classes = v;
   int ie = 0, oe = 0;
@@ -284,6 +289,19 @@ ModelMeta parse_model_meta(const KeyValues &kv) {
   m.output_dtype = get("output_dtype");
   m.run = get("run");
   return m;
+}
+
+std::string model_shape_json(int in_w, int in_h, int grid_w, int grid_h) {
+  if (in_w == in_h && grid_w == grid_h) {
+    return "\"input\":" + std::to_string(in_w) + ",\"grid\":" + std::to_string(grid_w);
+  }
+  return "\"input_w\":" + std::to_string(in_w) + ",\"input_h\":" + std::to_string(in_h) +
+         ",\"grid_w\":" + std::to_string(grid_w) + ",\"grid_h\":" + std::to_string(grid_h);
+}
+
+std::string model_shape_kv(int in_w, int in_h) {
+  if (in_w == in_h) return "input_size=" + std::to_string(in_w);
+  return "input_width=" + std::to_string(in_w) + "\ninput_height=" + std::to_string(in_h);
 }
 
 std::string frame_json(const FrameReport &r, float min_score) {

@@ -10,6 +10,11 @@
 // reproduces each step exactly, including Pillow's 22-bit fixed-point coefficients and
 // its uint8 intermediate after the horizontal pass, so the int8 tensor matches byte for
 // byte. ESP-DL tensors are NHWC, so the output is HWC (batch 1).
+//
+// The model input is in_w x in_h pixels and need not be square (a 4:3 camera frame into a
+// 256x192 input has no padding). The frame is scaled by min(in_w / src_w, in_h / src_h),
+// one factor for both axes, and centred; for a square input that is the long side scaled to
+// the input size, exactly as before.
 #pragma once
 
 #include <cstddef>
@@ -33,9 +38,10 @@ struct Letterbox {
 // Letterbox(scale=lb.scale / 2**shift, ...).
 Letterbox frame_letterbox(const Letterbox &decoded, int scale_shift);
 
-// letterbox(image, size) with zoom 1 and centered shift. Python's round() is
-// round-half-to-even, so this uses nearbyint under the default rounding mode.
-Letterbox compute_letterbox(int src_w, int src_h, int size);
+// letterbox(image, (in_w, in_h)) with zoom 1 and centered shift
+// (tinyseek.data.transforms.letterbox_geometry). Python's round() is round-half-to-even, so
+// this uses nearbyint under the default rounding mode.
+Letterbox compute_letterbox(int src_w, int src_h, int in_w, int in_h);
 
 // Pillow's separable resampling coefficients for one axis (precompute_coeffs +
 // normalize_coeffs_8bpc in libImaging/Resample.c).
@@ -77,7 +83,8 @@ BilinearAxis bilinear2_axis(int in_size, int out_size);
 // Everything that depends only on (source size, model size, input exponent, resample):
 // built once per resolution so the per-frame cost is just the resample and the lookups.
 struct PreprocessPlan {
-  int src_w = 0, src_h = 0, size = 0, exponent = 0;
+  int src_w = 0, src_h = 0, exponent = 0;
+  int in_w = 0, in_h = 0;             // model input, pixels (in_w == in_h for a square model)
   Resample resample = Resample::kPillow;
   Letterbox lb;
   ResampleAxis horiz, vert;           // kPillow
@@ -88,15 +95,16 @@ struct PreprocessPlan {
   int16_t lut16[3][256];              // the same for an int16 input tensor (w16a16 models)
 };
 
-// `exponent` is the model input tensor's power-of-two exponent (value = q * 2^exponent).
-void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponent,
+// `in_w` x `in_h` is the model input in pixels (the model's NHWC shape is [1, in_h, in_w, 3]);
+// `exponent` is the input tensor's power-of-two exponent (value = q * 2^exponent).
+void make_plan(PreprocessPlan &plan, int src_w, int src_h, int in_w, int in_h, int exponent,
                const NormalizeParams &norm = NormalizeParams(), Resample resample = Resample::kPillow);
 
 // Bytes of scratch `preprocess` needs (kPillow: horizontal-pass rows, uint8 RGB;
 // kBilinear: two horizontally resampled rows, uint16 RGB).
 size_t scratch_bytes(const PreprocessPlan &plan);
 
-// rgb: src_h x src_w x 3, R,G,B order, row-major. out: size x size x 3 (HWC), int8 for
+// rgb: src_h x src_w x 3, R,G,B order, row-major. out: in_h x in_w x 3 (HWC), int8 for
 // an int8 model input, int16 for an int16 one (same resample, same exponent rule).
 // scratch: at least scratch_bytes(plan) bytes. Neither buffer may alias.
 void preprocess(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, int8_t *out);

@@ -276,6 +276,105 @@ def test_stage_w16a16_run_records_int16_io(tmp_path, cli):
         detector_card.stage([(None, run16)], out, None, {}, None, {}, None, None, 0, None)
 
 
+# --- rectangular model inputs (2026-11-28) -------------------------------------------------------
+
+RECT_INFO = INFO.replace("1x192x192x3", "1x192x256x3").replace("1x24x24x5", "1x24x32x5")  # NHWC: 192 rows, 256 columns
+SQUARE_SIDECAR_KEYS = ["prompt", "run", "input_size", "stride", "num_classes", "mean", "std", "pad_value",
+                       "score_threshold", "max_detections", "detect_threshold", "detect_threshold_source",
+                       "input_exponent", "output_exponent", "input_dtype", "output_dtype", "quant", "espdl_bytes",
+                       "espdl_sha256"]
+
+
+def rect_run(path: Path) -> Path:
+    """fake_run with a 256x192 (width x height) model, as tinyseek.train.export writes it."""
+    run_dir = fake_run(path)
+    meta = json.loads((run_dir / "model_meta.json").read_text())
+    del meta["input_size"]
+    meta.update(input_width=256, input_height=192)
+    (run_dir / "model_meta.json").write_text(json.dumps(meta))
+    (run_dir / "model.info").write_text(RECT_INFO)
+    return run_dir
+
+
+def cpp_meta(cli: Path, path: Path) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in run(cli, "meta", str(path)))
+
+
+def test_square_sidecar_is_what_it_was(tmp_path, cli):
+    """A square model's sidecar keeps its keys, in order, with input_size and no width/height."""
+    out = tmp_path / "card"
+    m = detector_card.stage([(None, fake_run(tmp_path / "r"))], out, None, {}, None, {}, None, None, 0, None)
+    side = out / "sdcard" / "tinyseek" / "models" / "backpack.txt"
+    lines = side.read_text().splitlines()
+    assert [line.split("=", 1)[0] for line in lines] == SQUARE_SIDECAR_KEYS
+    assert "input_size=192" in lines
+    assert m["models"][0]["input_size"] == 192 and "input_width" not in m["models"][0]
+    meta = cpp_meta(cli, side)
+    assert (meta["input_size"], meta["input_width"], meta["input_height"]) == ("192", "192", "192")
+
+
+def test_rectangular_sidecar_has_width_and_height(tmp_path, cli):
+    out = tmp_path / "card"
+    m = detector_card.stage([(None, rect_run(tmp_path / "r"))], out, None, {}, None, {}, None, None, 0, None)
+    side = out / "sdcard" / "tinyseek" / "models" / "backpack.txt"
+    kv = read_kv(side)
+    assert "input_size" not in kv and (kv["input_width"], kv["input_height"]) == ("256", "192")
+    keys = [line.split("=", 1)[0] for line in side.read_text().splitlines()]
+    assert keys == ["prompt", "run", "input_width", "input_height", *SQUARE_SIDECAR_KEYS[3:]]
+    staged = m["models"][0]
+    assert (staged["input_width"], staged["input_height"]) == (256, 192) and "input_size" not in staged
+    assert (kv["input_exponent"], kv["output_exponent"]) == ("-6", "-4")
+    # The firmware's parser reads the new keys; a rectangular size is not reported as input_size.
+    meta = cpp_meta(cli, side)
+    assert "input_size" not in meta and (meta["input_width"], meta["input_height"]) == ("256", "192")
+
+
+def test_staging_checks_the_rectangular_graph_shape(tmp_path):
+    r = rect_run(tmp_path / "r")
+    args = ([(None, r)], tmp_path / "card", None, {}, None, {}, None, None, 0, None)
+    (r / "model.info").write_text(RECT_INFO.replace("1x192x256x3", "1x256x192x3"))  # width and height swapped
+    with pytest.raises(SystemExit, match="256x192"):
+        detector_card.stage(*args)
+    (r / "model.info").write_text(RECT_INFO.replace("1x24x32x5", "1x32x24x5"))  # grid swapped
+    with pytest.raises(SystemExit, match="grid"):
+        detector_card.stage(*args)
+    (r / "model.info").write_text(INFO)  # a square graph for rectangular metadata
+    with pytest.raises(SystemExit):
+        detector_card.stage(*args)
+    (r / "model.info").write_text(RECT_INFO)
+    detector_card.stage(*args)
+    # No size at all in model_meta.json is an error, not a guess.
+    meta = json.loads((r / "model_meta.json").read_text())
+    del meta["input_width"]
+    (r / "model_meta.json").write_text(json.dumps(meta))
+    with pytest.raises(KeyError):
+        detector_card.stage(*args)
+
+
+@pytest.mark.parametrize("text,size,width,height", [
+    ("input_size=128\n", "128", "128", "128"),                              # a card made before rectangular inputs
+    ("input_width=256\ninput_height=192\n", None, "256", "192"),          # a rectangular model
+    ("input_width=288\ninput_height=224\ninput_size=192\n", None, "288", "224"),  # both: width/height win
+    ("input_width=256\n", "0", "0", "0"),                                   # half a size is no size
+    ("prompt=cup\n", "0", "0", "0"),                                        # not given: nothing to compare
+    ("input_width=192\ninput_height=192\n", "192", "192", "192"),         # square, written the new way
+])
+def test_firmware_reads_old_and_new_size_keys(cli, tmp_path, text, size, width, height):
+    path = tmp_path / "m.txt"
+    path.write_text(text)
+    meta = cpp_meta(cli, path)
+    assert (meta.get("input_size"), meta["input_width"], meta["input_height"]) == (size, width, height)
+
+
+def test_firmware_reports_the_model_shape(cli):
+    """Square models keep "input"/"grid" and input_size; rectangular ones get their own keys."""
+    assert run(cli, "shape", "192", "192", "24", "24") == ['"input":192,"grid":24', "input_size=192"]
+    assert run(cli, "shape", "256", "192", "32", "24") == [
+        '"input_w":256,"input_h":192,"grid_w":32,"grid_h":24', "input_width=256", "input_height=192"]
+    assert json.loads("{" + run(cli, "shape", "288", "224", "36", "28")[0] + "}") == {
+        "input_w": 288, "input_h": 224, "grid_w": 36, "grid_h": 28}
+
+
 def test_stage_refuses_credentials_and_bad_names(tmp_path):
     with pytest.raises(SystemExit):
         detector_card.parse_sets(["wifi_password=x"])

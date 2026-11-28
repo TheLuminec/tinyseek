@@ -6,8 +6,10 @@
 // peaks over all classes are kept, then those scoring >= `score_threshold`.
 //   center = (cell + offset) * stride,  wh = exp(log_wh) * stride,
 //   original = (letterboxed - pad) / scale.
-// The output tensor is the ESP-DL int8 (or int16) tensor, NHWC [1, G, G, num_classes + 4],
-// with channels [heatmap_logit..., log_w, log_h, off_x, off_y] and one power-of-two exponent.
+// The output tensor is the ESP-DL int8 (or int16) tensor, NHWC [1, grid_h, grid_w,
+// num_classes + 4], with channels [heatmap_logit..., log_w, log_h, off_x, off_y] and one
+// power-of-two exponent. The grid is (input height / stride) x (input width / stride) and
+// need not be square; the letterbox has one scale for both axes.
 #pragma once
 
 #include <cstdint>

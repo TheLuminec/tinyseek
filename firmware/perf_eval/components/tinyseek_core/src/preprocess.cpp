@@ -27,13 +27,16 @@ inline uint8_t clip8(int32_t in) {
 
 }  // namespace
 
-Letterbox compute_letterbox(int src_w, int src_h, int size) {
+Letterbox compute_letterbox(int src_w, int src_h, int in_w, int in_h) {
   Letterbox lb;
-  lb.scale = static_cast<double>(size) * 1.0 / std::max(src_w, src_h);
+  // min(in_w / src_w, in_h / src_h) in double, as the PC computes it. For a square input
+  // the smaller quotient is the one over the longer source side, so this is the same
+  // double as the earlier size / max(src_w, src_h).
+  lb.scale = std::min(static_cast<double>(in_w) * 1.0 / src_w, static_cast<double>(in_h) * 1.0 / src_h);
   lb.resized_w = std::max(1, static_cast<int>(std::nearbyint(src_w * lb.scale)));
   lb.resized_h = std::max(1, static_cast<int>(std::nearbyint(src_h * lb.scale)));
-  lb.pad_x = static_cast<int>(std::nearbyint((size - lb.resized_w) * 0.5));
-  lb.pad_y = static_cast<int>(std::nearbyint((size - lb.resized_h) * 0.5));
+  lb.pad_x = static_cast<int>(std::nearbyint((in_w - lb.resized_w) * 0.5));
+  lb.pad_y = static_cast<int>(std::nearbyint((in_h - lb.resized_h) * 0.5));
   return lb;
 }
 
@@ -126,15 +129,16 @@ BilinearAxis bilinear2_axis(int in_size, int out_size) {
   return ax;
 }
 
-void make_plan(PreprocessPlan &plan, int src_w, int src_h, int size, int exponent,
+void make_plan(PreprocessPlan &plan, int src_w, int src_h, int in_w, int in_h, int exponent,
                const NormalizeParams &norm, Resample resample) {
   plan.src_w = src_w;
   plan.src_h = src_h;
-  plan.size = size;
+  plan.in_w = in_w;
+  plan.in_h = in_h;
   plan.exponent = exponent;
   plan.resample = resample;
   plan.pad_value = norm.pad_value;
-  plan.lb = compute_letterbox(src_w, src_h, size);
+  plan.lb = compute_letterbox(src_w, src_h, in_w, in_h);
   if (resample == Resample::kBilinear) {
     plan.bx = bilinear2_axis(src_w, plan.lb.resized_w);
     plan.by = bilinear2_axis(src_h, plan.lb.resized_h);
@@ -174,7 +178,7 @@ template <typename T>
 void fill_pad(const PreprocessPlan &plan, const T (*lut)[256], T *out) {
   const uint8_t v = plan.pad_value;  // 114 unless the model's sidecar says otherwise
   const T pad[3] = {lut[0][v], lut[1][v], lut[2][v]};
-  for (int i = 0; i < plan.size * plan.size; ++i) {
+  for (int i = 0; i < plan.in_w * plan.in_h; ++i) {
     out[i * 3 + 0] = pad[0];
     out[i * 3 + 1] = pad[1];
     out[i * 3 + 2] = pad[2];
@@ -198,7 +202,7 @@ void bilinear_row(const PreprocessPlan &plan, const uint8_t *row, uint16_t *dst)
 
 template <typename T>
 void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, const T (*lut)[256], T *out) {
-  const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
+  const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, in_w = plan.in_w;
   const int last = plan.src_h - 1;
   const size_t stride = static_cast<size_t>(plan.src_w) * 3;
   // A two-row cache of horizontally resampled source rows: consecutive output rows
@@ -223,7 +227,7 @@ void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t
     const int k1 = tag[k0] == y1 ? k0 : 1 - k0;
     load(k1, y1);
     const uint16_t *r0 = rows[k0], *r1 = rows[k1];
-    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
+    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * in_w + plan.lb.pad_x) * 3;
     for (int i = 0; i < nw * 3; i += 3) {
       for (int c = 0; c < 3; ++c) {
         const uint32_t v = r0[i + c] * g + r1[i + c] * f;
@@ -236,7 +240,7 @@ void preprocess_bilinear(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t
 // Pillow's BILINEAR resample (kPillow). T is the input tensor's element type.
 template <typename T>
 void preprocess_pillow(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *scratch, const T (*lut)[256], T *out) {
-  const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, size = plan.size;
+  const int nw = plan.lb.resized_w, nh = plan.lb.resized_h, in_w = plan.in_w;
   const bool need_h = nw != plan.src_w;
   const bool need_v = nh != plan.src_h;
   const int32_t half = 1 << (kPrecisionBits - 1);
@@ -275,7 +279,7 @@ void preprocess_pillow(const PreprocessPlan &plan, const uint8_t *rgb, uint8_t *
   // Vertical pass straight into the quantized canvas (no second uint8 buffer).
   const int ks = plan.vert.ksize;
   for (int yy = 0; yy < nh; ++yy) {
-    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * size + plan.lb.pad_x) * 3;
+    T *dst = out + (static_cast<size_t>(yy + plan.lb.pad_y) * in_w + plan.lb.pad_x) * 3;
     if (!need_v) {
       const uint8_t *src = temp + static_cast<size_t>(yy - temp_row0) * temp_w * 3;
       for (int xx = 0; xx < nw; ++xx) {

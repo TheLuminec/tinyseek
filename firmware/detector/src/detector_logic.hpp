@@ -77,7 +77,12 @@ PromptAction prompt_action(const std::string &pending, const std::string &curren
 // models/<prompt>.txt, written by tinyseek.deploy.detector_card.
 struct ModelMeta {
   std::string prompt;
-  int input_size = 0, stride = 8, num_classes = 1;
+  // Model input in pixels, 0 = not given (the loaded model's own shape is what is used; this
+  // only detects a stale card). A square model's sidecar has input_size=S, which sets both;
+  // a rectangular one has input_width=W and input_height=H instead. If a file has both
+  // forms, input_width/input_height win.
+  int input_w = 0, input_h = 0;
+  int stride = 8, num_classes = 1;
   int input_exponent = 0, output_exponent = 0;  // 0 = not given; the model's own are used
   bool has_exponents = false;
   float mean[3] = {0.485f, 0.456f, 0.406f};
@@ -90,6 +95,15 @@ struct ModelMeta {
   std::string sha256, run;
 };
 ModelMeta parse_model_meta(const KeyValues &kv);
+
+// How the loaded model's shape is reported, so a square model's lines are what they have
+// always been and a rectangular one cannot be mistaken for a square.
+//   model_shape_json: `"input":192,"grid":24` (square), or
+//                     `"input_w":256,"input_h":192,"grid_w":32,"grid_h":24` (rectangular);
+//   model_shape_kv:   `input_size=192`, or `input_width=256\ninput_height=192` (run.txt, the
+//                     same keys as the sidecar).
+std::string model_shape_json(int in_w, int in_h, int grid_w, int grid_h);
+std::string model_shape_kv(int in_w, int in_h);
 
 struct StageTimes {
   double cap = 0, dec = 0, pre = 0, inf = 0, post = 0;  // ms per stage

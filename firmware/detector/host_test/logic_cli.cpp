@@ -6,6 +6,7 @@
 //   logic_cli prompt <typed>                prints the normalized name and 1/0 for valid
 //   logic_cli with_prompt <config.txt> <p>  prints the config text with prompt=<p>
 //   logic_cli meta <model.txt>              prints the parsed sidecar as key=value
+//   logic_cli shape <in_w> <in_h> <grid_w> <grid_h>  prints model_shape_json, then model_shape_kv
 //   logic_cli frame                         prints a frame_json and a replay_json line
 //   logic_cli save <exists> <read_ok> <config.txt> <p>  config_for_save: the text, or SKIP
 //   logic_cli recover <config_exists> <tmp_exists>      config_recovery: none|restore|delete
@@ -13,6 +14,7 @@
 //
 // config files are parsed with tinyseek_core's parse_kv, the code the board runs.
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -70,13 +72,24 @@ int main(int argc, char **argv) {
   }
   if (argc == 3 && !std::strcmp(argv[1], "meta")) {
     det::ModelMeta m = det::parse_model_meta(read_kv(argv[2]));
-    std::printf("prompt=%s\ninput_size=%d\nstride=%d\nnum_classes=%d\nhas_exponents=%d\ninput_exponent=%d\n"
+    // input_size is printed for a square (or absent) size, as before; input_width and
+    // input_height always.
+    if (m.input_w == m.input_h) std::printf("input_size=%d\n", m.input_w);
+    std::printf("prompt=%s\ninput_width=%d\ninput_height=%d\nstride=%d\nnum_classes=%d\nhas_exponents=%d\n"
+                "input_exponent=%d\n"
                 "output_exponent=%d\nmean=%g,%g,%g\nstd=%g,%g,%g\npad_value=%d\nscore_threshold=%g\n"
                 "max_detections=%d\ndetect_threshold=%g\nsha256=%s\ninput_dtype=%s\noutput_dtype=%s\n",
-                m.prompt.c_str(), m.input_size, m.stride, m.num_classes, m.has_exponents ? 1 : 0, m.input_exponent,
+                m.prompt.c_str(), m.input_w, m.input_h, m.stride, m.num_classes, m.has_exponents ? 1 : 0,
+                m.input_exponent,
                 m.output_exponent, m.mean[0], m.mean[1], m.mean[2], m.std[0], m.std[1], m.std[2], m.pad_value,
                 m.score_threshold, m.max_detections, m.detect_threshold, m.sha256.c_str(),
                 m.input_dtype.c_str(), m.output_dtype.c_str());
+    return 0;
+  }
+  if (argc == 6 && !std::strcmp(argv[1], "shape")) {
+    const int in_w = std::atoi(argv[2]), in_h = std::atoi(argv[3]);
+    std::printf("%s\n%s\n", det::model_shape_json(in_w, in_h, std::atoi(argv[4]), std::atoi(argv[5])).c_str(),
+                det::model_shape_kv(in_w, in_h).c_str());
     return 0;
   }
   if (argc == 2 && !std::strcmp(argv[1], "frame")) {
