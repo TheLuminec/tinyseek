@@ -1,0 +1,15 @@
+# The cup_v2 scenes (generate_comfy_cup_v2.yaml) drawn by Z-Image Turbo, with a new seed. For
+# backpack, 1,000 Z-Image images added to 2,000 Qwen images raised held-out AP@0.5 from 0.489
+# to 0.518 (Z-Image alone: 0.351). Workflow settings as in generate_comfy_far_zimage.yaml.
+base: generate_comfy_cup_v2.yaml
+seed: 5
+synth_set: zimage_turbo_cup_v1
+workflow: configs/comfy/z_image_turbo.json
+model: z-image-turbo (int8 weights on the server)
+model_licence: apache-2.0
+workflow_inputs:
+  text: [text, text]
+  seed: [sample, seed]
+  width: [latent, width]
+  height: [latent, height]
+output_node: image

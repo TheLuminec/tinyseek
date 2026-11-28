@@ -1,0 +1,15 @@
+# The person scenes (generate_comfy_person.yaml) drawn by Z-Image Turbo, with a new seed.
+# Workflow settings as in generate_comfy_far_zimage.yaml. Label person sets at teacher
+# threshold 0.2 (OWLv2 scores "a person" low; see CLAUDE.md).
+base: generate_comfy_person.yaml
+seed: 6
+synth_set: zimage_turbo_person_v1
+workflow: configs/comfy/z_image_turbo.json
+model: z-image-turbo (int8 weights on the server)
+model_licence: apache-2.0
+workflow_inputs:
+  text: [text, text]
+  seed: [sample, seed]
+  width: [latent, width]
+  height: [latent, height]
+output_node: image
