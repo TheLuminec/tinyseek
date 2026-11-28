@@ -131,6 +131,10 @@ done: /sdcard/tinyseek_eval/results/run_001
 
 **A complete pass** ends with `done: ...`, and `run.txt` gets `complete=1`.
 
+A model with a rectangular input prints its shape as the model file has it, height first:
+`input [1,192,256,3] ... output [1,24,32,5]` for a 256 wide, 192 high input. Its
+`input_size` column in `bench.csv` reads `256x192`.
+
 **On failure:** the sketch prints `FATAL: <reason>` and stops. The reasons are no card,
 no `/tinyseek_eval` folder, camera init failure, or out of PSRAM. A model that does not
 load is reported as `ERROR: ... model did not load` and skipped.
@@ -216,3 +220,6 @@ Open until the first build or run:
 - **App size.** That the app fits the 3 MB slot of the chosen partition scheme. If the
   upload reports it is too large, none of the 16 MB presets has a bigger app slot.
 - **Stack.** That 16 KB of loop-task stack is enough.
+- **Rectangular inputs.** That esp-dl 3.3.11 runs a model whose input is not square
+  (for example [1,192,256,3]) with output identical to the PC simulation. The sketch's
+  preprocessing and decode for such models are host-tested; the model step is not.

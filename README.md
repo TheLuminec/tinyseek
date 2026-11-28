@@ -8,7 +8,7 @@ text prompt
   -> generate   scene descriptions -> images from a local text-to-image model (ComfyUI)
   -> tone-match brightness / contrast / saturation pulled to the camera's (tinyseek.generate.camsim)
   -> label      an open-vocabulary teacher (OWLv2) draws the boxes
-  -> distill    a 0.5 M-parameter CenterNet-style student, 192x192 input
+  -> distill    a 0.5 M-parameter CenterNet-style student, 192x192 input (or e.g. 256x192)
   -> quantize   quantization-aware training, int8 ESP-DL model (esp-ppq)
   -> deploy     Arduino sketch on a Freenove ESP32-S3 CAM: boxes on Serial, an LED and a web page
 ```
@@ -108,6 +108,10 @@ Then build `firmware/detector` in the Arduino IDE and copy the card folder over:
 layout, the serial commands and the web page. Several prompts can sit on one card; the board
 switches between them at run time.
 
+To train at another input size, add `model.input_size=256` or, for the camera's 4:3
+frame, `'model.input_size=[256,192]'` to step 4 (see "Input size" below); the later steps
+pick it up from the run.
+
 Each run writes `runs/<prompt>/<condition>/seed<seed>/` with the resolved `config.yaml`
 (including the git revision), `train_log.jsonl`, `last.pt` and `eval.json`; an export adds
 `model.espdl`, `model_meta.json` and `export.json` (float and int8 AP on the same photos).
@@ -172,6 +176,36 @@ size and center offset, so on-device post-processing is a 3x3 local-maximum test
 `expf` calls; no anchors or NMS. Default config: 0.50M parameters (~475 KB int8), ~1.3 MB
 peak activations, 71M MACs (`tinyseek.train.budget`). `model.input_size=128` gives the
 earlier 128x128 model (31M MACs, 198 ms on the board).
+
+### Input size
+
+`model.input_size` is an int for a square input, or `[width, height]` for a rectangular
+one. On the command line: `'model.input_size=[256,192]'` (quoted, because the brackets are
+glob characters in a shell). Each side must be a multiple of 32, which is what the fusion of
+the stride-8/16/32 features needs; a config with any other size is rejected when it is
+loaded.
+
+The frame is always letterboxed the same way: scaled by `min(width / frame width, height /
+frame height)`, centred, padded with 114. The camera frame is 800x600, so a square input
+spends a quarter of its pixels on padding (192x192 holds a 192x144 picture), while a 4:3
+input such as 256x192 has none. Cost follows the pixel count:
+
+| Input (width x height) | Picture of an 800x600 frame | MACs | Peak activations (estimate) | Budget check |
+|---|---|---|---|---|
+| 192 (192x192) | 192x144 | 71 M | 1.33 MB | fits |
+| 256 (256x256) | 256x192 | 125 M | 2.36 MB | fits |
+| [256, 192] | 256x192 | 94 M | 1.77 MB | fits |
+| [288, 224] | 288x216 | 123 M | 2.32 MB | fits |
+| [320, 256] | 320x240 | 157 M | 2.95 MB | over the 150 M MAC limit |
+
+These are `tinyseek.train.budget` estimates. Only 128x128 and 192x192 have been timed on
+the board; no rectangular model has been run on it yet.
+
+Every tool reads the size from the run's `config.yaml`, so training, QAT, export, staging
+and the firmware need no other switch. An export records a square input as `input_size` in
+`model_meta.json` and in the SD-card sidecar, as before, and a rectangular one as
+`input_width` and `input_height`. The firmware takes the shape from the model file itself
+([1, height, width, 3]) and accepts sidecars of either form.
 
 ## Data and secrets
 

@@ -69,7 +69,9 @@ version is read from the component manager's downloaded manifest at build time, 
   on, and 4 s of warm-up frames.
 - Models load from the SD card with `dl::Model(path, fbs::MODEL_LOCATION_IN_SDCARD, ...)`,
   so swapping a model needs no reflash. ESP-DL reads the whole file into PSRAM. Input
-  size, dtype and exponents are read from the loaded model, never assumed. A model counts
+  size, dtype and exponents are read from the loaded model, never assumed. The input may be
+  square ([1, S, S, 3]) or rectangular ([1, height, width, 3], for example [1, 192, 256, 3]);
+  the output grid must have the same aspect, so one stride holds for both axes. A model counts
   as loaded when `get_fbs_model()` and its input and output tensors are non-null. That
   check works in both ESP-DL 3.3.15 and 3.3.11; `is_built()` exists only from 3.3.15.
 
@@ -107,7 +109,11 @@ sync
 /tinyseek_eval/bench.jpg          one 800x600 camera photo used for the timing loops
 /tinyseek_eval/models/px192.espdl every *.espdl here is benchmarked, in name order
 /tinyseek_eval/models/px192.txt   decode settings and provenance (score_threshold 0.05,
-                                  max_detections 20, mean/std, exponents, sha256, run dir)
+                                  max_detections 20, mean/std, exponents, sha256, run dir).
+                                  The input size is `input_size=192` for a square model, or
+                                  `input_width=256` and `input_height=192` for a rectangular
+                                  one; this firmware does not read it (it uses the model's
+                                  own shape), the PC comparison does
 /tinyseek_eval/parity/cases.txt   case ids, one per line
 /tinyseek_eval/parity/c000.jpg    camera JPEG (from the run's held-out eval set)
 /tinyseek_eval/parity/c000.rgb    the same photo decoded by Pillow, 800x600x3 RGB888
@@ -192,7 +198,7 @@ There is one row per model and stage. Each row carries these columns:
 | Column(s) | Meaning |
 | --- | --- |
 | `run`, `board`, `build`, `idf_version`, `espdl_version`, `jpeg_decoder`, `cpu_mhz` | which run and setup produced the row. `build` is `esp-idf` or `arduino-esp32 <core version>`, and `jpeg_decoder` names the decoder used |
-| `model`, `model_bytes`, `input_size` | the model |
+| `model`, `model_bytes`, `input_size` | the model. `input_size` is the side of a square input (`192`), or `WIDTHxHEIGHT` for a rectangular one (`256x192`) |
 | `input_exponent`, `output_exponent` | read from the loaded model |
 | `input_dtype`, `output_dtype` | `INT8`, or `INT16` for a w16a16 export; read from the loaded model (the last two columns) |
 | `internal_kb` | the ESP-DL internal-RAM limit used |
@@ -204,7 +210,7 @@ There is one row per model and stage. Each row carries these columns:
 | `stage` | What is timed |
 | --- | --- |
 | `load` | `dl::Model` construction: SD read, parse, parameter copy, memory planning (1 run) |
-| `preprocess_plan` | one-time resample coefficients and quantisation tables for 800x600 to S (1 run) |
+| `preprocess_plan` | one-time resample coefficients and quantisation tables for 800x600 to the model input (1 run) |
 | `jpeg_decode` | `bench.jpg` 800x600 to RGB888, including the header size check (esp_new_jpeg here; see `jpeg_decoder`) |
 | `preprocess` | RGB888 to int8 (or int16) NHWC letterboxed input (Pillow-exact resample, normalise, quantise) |
 | `inference` | `Model::run()` only; the input copy into the model is outside the timer |
@@ -297,12 +303,20 @@ which calls the evaluation code directly).
   This confirms ROUND_HALF_UP and saturation on the input.
 - The JPEG header check (`jpeg_info`) reports the same size as Pillow, flags progressive
   files, and rejects non-JPEG and truncated input (2026-11-16).
+- Rectangular model inputs (2026-11-28): tinyseek_core letterboxes into `in_w` x `in_h`
+  with the scale min(in_w / frame width, in_h / frame height). The host tests check
+  256x192, 288x224 and 192x256 against the PC reference byte for byte (both resamples,
+  int8 and int16, several frame sizes) and the decode of the matching non-square grids.
+  Square inputs are pinned to the bytes they gave before the change. `core_cli` takes a
+  size as `192` or `256x192` and a grid as `24` or `32x24`.
 
 **Not verified (needs a real build and the board):**
 
 - Compiling against the real ESP-IDF/ESP-DL headers. Only a syntax check against stub
   headers was done.
 - That ESP-DL 3.3.15 loads esp-ppq 1.3.11 files, including the int16 depthwise layers.
+- A rectangular model on the board. No model with a non-square input has been loaded or
+  run by ESP-DL here; its output parity with the PC simulation and its timings are open.
 - That the `get_fbs_model()` check catches a failed load.
 - Writing the input through `TensorBase::data`.
 - `heap_caps_aligned_alloc` buffers working with esp_new_jpeg.

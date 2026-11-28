@@ -102,6 +102,26 @@ card.
                                  summary.txt
 ```
 
+### Model input size in the sidecar
+
+The model input may be square or rectangular (`model.input_size: [width, height]` when
+training, for example 256x192 for the camera's 4:3 frame). The sidecar records it in one
+of two forms:
+
+| Model | Sidecar lines | Model file input (NHWC) |
+| --- | --- | --- |
+| square, e.g. 192x192 | `input_size=192` | [1, 192, 192, 3] |
+| rectangular, e.g. 256 wide, 192 high | `input_width=256` and `input_height=192` (no `input_size`) | [1, 192, 256, 3] |
+
+Cards staged before rectangular inputs existed have `input_size` only and load as they
+always did. If a file has both forms, `input_width`/`input_height` are used.
+
+The firmware takes the input and grid shape from the loaded model, not from the sidecar; it
+uses the sidecar's size only to warn about a stale card ("input size differs from
+<prompt>.txt"). The frame is scaled by min(input width / frame width, input height / frame
+height) and centred, so an 800x600 frame fills a 256x192 input with no padding and has 24
+padded rows above and below in a 192x192 one. Boxes are reported in frame pixels either way.
+
 ### `config.txt` keys
 
 Missing keys take the default. The firmware prints a warning for unknown keys and invalid
@@ -161,6 +181,9 @@ measurements.
 {"type":"frame","n":1,"prompt":"backpack","src":"camera","w":800,"h":600,"ok":true,"t":{"cap":12.0,"dec":431.0,"pre":208.0,"inf":448.0,"post":0.40,"lat":1100.0,"period":0.0},"fps":0.00,"thr":0.300,"hit":true,"ndet":20,"dets":[{"s":0.812,"x":301.5,"y":222.0,"w":60.2,"h":81.0}]}
 ```
 
+- **`model` fields:** for a square model `input` and `grid` are the input side in pixels
+  and the output side in cells, as above. A rectangular model has
+  `"input_w":256,"input_h":192,"grid_w":32,"grid_h":24` in their place.
 - **`frame` fields:**
   - `n` is the frame number;
   - `t` holds the stage times in ms: `cap` (wait for and copy the camera frame, or read
@@ -249,7 +272,9 @@ the `mem` lines `after_wifi` and `after_web` give the real numbers on the first 
    path, with the same decode, resize and model settings. It prints a `frame` line per file
    and then `replay_done` with the mean stage times.
 3. The results go to `/tinyseek/results/run_NNN/`:
-   - `run.txt`: build, settings, model sha256; `complete=1` at the end;
+   - `run.txt`: build, settings, model sha256 and input size (`input_size=192`, or
+     `input_width=256` and `input_height=192` for a rectangular model); `complete=1` at the
+     end;
    - `dets.jsonl`: one line per file, every detection at full precision;
    - `summary.txt`: per-stage mean/min/max.
 4. Copy that folder back and score it:
@@ -314,7 +339,9 @@ path, which perf_eval measured on 8 photos x 2 models x 3 runs.
   - `config.txt` parsing;
   - prompt names;
   - the config rewrite;
-  - the sidecar parser against what the stager writes;
+  - the sidecar parser against what the stager writes, for square (`input_size`) and
+    rectangular (`input_width`, `input_height`) models, and against hand-written old and
+    new sidecars;
   - the JSON lines;
   - the replay scorer reading the firmware's own result lines.
 - `tests/test_deploy_tjpgd.py` and `tests/test_deploy_core.py`:
@@ -322,7 +349,11 @@ path, which perf_eval measured on 8 photos x 2 models x 3 runs.
     decode (perf_eval runs 003, 004, 006);
   - the scaled decode equals the truncating box average of the full decode;
   - the C++ bilinear resample equals `reference.bilinear_resize` byte for byte;
-  - the Pillow-exact path holds at 400x300 and 200x150.
+  - the Pillow-exact path holds at 400x300 and 200x150;
+  - rectangular inputs (256x192, 288x224 and the tall 192x256): preprocessing equals the
+    PC reference byte for byte for both resamples, int8 and int16, and the decode of a
+    non-square grid gives the PC's boxes; square inputs give the same bytes as before
+    rectangular inputs were added (pinned hashes).
 - Syntax: every `src/*.cpp` and `detector.ino` passes `g++ -fsyntax-only -Wall -Wextra
   -Werror`. Real headers from the core's esp32s3-libs-3.3.12 were used where they are
   self-contained (esp_camera.h, sensor.h, img_converters.h, jpeg_decoder.h, esp_jpeg_dec.h,
@@ -340,3 +371,6 @@ path, which perf_eval measured on 8 photos x 2 models x 3 runs.
 - Internal heap with Wi-Fi on (the `after_wifi` and `after_web` lines).
 - `esp_new_jpeg` under this core (never run).
 - The web page on a phone over the board's AP.
+- A rectangular model on the board: that esp-dl 3.3.11 loads and runs an export whose
+  input is [1, 192, 256, 3] with output identical to the PC simulation, its inference time
+  and its memory. Only square models (128 and 192 px) have run on the board.
