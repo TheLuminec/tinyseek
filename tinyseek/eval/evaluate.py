@@ -29,14 +29,16 @@ from tinyseek.train.targets import decode
 def predict(
     model: TinyCenterNet,
     records: list[Record],
-    input_size: int,
+    input_size: int | list[int] | tuple[int, int],
     device: torch.device,
     score_threshold: float = 0.05,
     max_detections: int = 20,
     batch_size: int = 64,
     num_workers: int = 4,
 ) -> list[dict]:
-    """Detections in original-image xywh coordinates, COCO results format."""
+    """Detections in original-image xywh coordinates, COCO results format.
+
+    ``input_size`` is the config's ``model.input_size``: an int or [width, height]."""
     ds = DetectionDataset(records, input_size, model.stride, train=False)
     loader = DataLoader(ds, batch_size=batch_size, num_workers=num_workers, collate_fn=collate_eval)
     model.eval()

@@ -7,7 +7,8 @@ run_root: runs
 model:
   arch: centernet_mbv2
   width_mult: 0.5
-  input_size: 192                 # square, letterboxed; 128 until 2026-11-15 (CLAUDE.md, Decisions)
+  input_size: 192                 # square, letterboxed; 128 until 2026-11-15 (CLAUDE.md, Decisions).
+                                  # Or [width, height], e.g. [256, 192]; each side a multiple of 32
   output_stride: 8                # 24x24 heatmap at 192 px
   head_channels: 48
   pretrained: true                # ImageNet weights from timm (0.5 is the narrowest pretrained MBv2)

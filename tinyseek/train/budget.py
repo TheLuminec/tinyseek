@@ -1,8 +1,11 @@
 """Check a student config against the ESP32-S3 memory and compute budget.
 
     python -m tinyseek.train.budget --config configs/base.yaml [model.input_size=160]
+    python -m tinyseek.train.budget --config configs/base.yaml 'model.input_size=[256,192]'
 
-Estimates are for int8 weights and activations. Peak activation memory is
+Estimates are for int8 weights and activations. MACs and activations are counted on a
+forward pass at the configured width x height, so they scale with the pixel count of a
+rectangular input (256x192 is 3/4 of 256x256). Peak activation memory is
 approximated as the largest (input + output) pair of any single layer, which is
 what a sequential executor reusing buffers must hold at once; the top-down fusion
 also keeps the stride-16/32 laterals alive, so a margin is added on top.
@@ -17,7 +20,7 @@ from dataclasses import asdict, dataclass
 import torch
 from torch import nn
 
-from tinyseek.config import load_config
+from tinyseek.config import check_input_size, load_config
 from tinyseek.train.model import build_model
 
 # Freenove/generic ESP32-S3 N16R8: 8 MB PSRAM, 16 MB flash. Measured on the board (2026-11-16,
@@ -34,7 +37,7 @@ MACS_BUDGET = 150e6
 
 @dataclass
 class Budget:
-    input_size: int
+    input_size: int | list[int]  # as in the config: an int (square) or [width, height]
     params: int
     weight_bytes_int8: int
     peak_activation_bytes_int8: int
@@ -42,7 +45,8 @@ class Budget:
     fits: bool
 
 
-def measure(model: nn.Module, input_size: int) -> Budget:
+def measure(model: nn.Module, input_size: int | list[int] | tuple[int, int]) -> Budget:
+    in_w, in_h = check_input_size(input_size)
     peak = 0
     macs = 0
 
@@ -60,7 +64,7 @@ def measure(model: nn.Module, input_size: int) -> Budget:
     handles = [m.register_forward_hook(hook) for m in leaves]
     model.eval()
     with torch.no_grad():
-        model(torch.zeros(1, 3, input_size, input_size))
+        model(torch.zeros(1, 3, in_h, in_w))
     for h in handles:
         h.remove()
 
@@ -69,7 +73,7 @@ def measure(model: nn.Module, input_size: int) -> Budget:
     shipped = params - sum(p.numel() for m in model.modules() if isinstance(m, nn.BatchNorm2d) for p in m.parameters())
     activations = int(peak * 1.5)
     return Budget(
-        input_size=input_size,
+        input_size=in_w if in_w == in_h else [in_w, in_h],
         params=params,
         weight_bytes_int8=shipped,
         peak_activation_bytes_int8=activations,

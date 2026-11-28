@@ -4,7 +4,10 @@
 
 Calibration uses letterboxed (un-augmented) images from the run's own training
 sources. Writes ``model.espdl`` and ``model_meta.json`` (input size, normalization,
-output channel layout) into the run directory. With ``--eval-images`` the simulated
+output channel layout) into the run directory. A square input is recorded as
+``input_size``, a rectangular one (``model.input_size: [width, height]``) as
+``input_width`` and ``input_height``; the model's input tensor is [1, height, width, 3]
+on the board. With ``--eval-images`` the simulated
 int8 graph is scored on the first eval set so the quantization drop is measured
 with the same metric as the float model.
 """
@@ -20,7 +23,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from tinyseek.config import fill, load_config, load_prompts
+from tinyseek.config import fill, input_wh, load_config, load_prompts, size_fields
 from tinyseek.data.dataset import DetectionDataset, collate_eval, load_coco_records
 from tinyseek.eval.evaluate import predict
 from tinyseek.eval.metrics import coco_ap50
@@ -95,7 +98,8 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
             shutil.copy2(run / name, out_dir / name)
     cfg = load_config(run / "config.yaml")
     mcfg = cfg["model"]
-    size = mcfg["input_size"]
+    size = mcfg["input_size"]  # int or [width, height]; the tensors are NCHW, height first
+    in_w, in_h = input_wh(size)
     model = build_model(dict(mcfg, pretrained=False))
     model.load_state_dict(torch.load(run / "last.pt", map_location="cpu")["model"])
     model.eval()
@@ -119,7 +123,7 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
             espdl_export_file=str(out_file),
             calib_dataloader=calib_loader,
             calib_steps=len(calib),
-            input_shape=[1, 3, size, size],
+            input_shape=[1, 3, in_h, in_w],
             target=target,
             num_of_bits=bits,
             collate_fn=lambda batch: batch["image"],
@@ -143,7 +147,7 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
         raise SystemExit(f"ESP-DL exponent constraint still violated by {bad}")
     meta = {
         "prompt": cfg["prompt"],
-        "input_size": size,
+        **size_fields(size),  # input_size for a square input, input_width/input_height otherwise
         "input_layout": "NCHW RGB, letterboxed with pad value 114",
         "mean": IMAGENET_MEAN,
         "std": IMAGENET_STD,
@@ -156,6 +160,8 @@ def export(run: Path, calib_images: int, eval_images: int, target: str, eval_set
     (out_dir / "model_meta.json").write_text(json.dumps(meta, indent=2))
     result = {"espdl_bytes": out_file.stat().st_size, "quant": quant, "int16_layers": int16_ops,
               "calib_images": len(calib), "source_run": str(run)}
+    if in_w != in_h:  # a square export.json stays as it always was
+        result.update(size_fields(size))
 
     if eval_images:
         name = eval_set or next(iter(cfg["eval"]["sets"]))

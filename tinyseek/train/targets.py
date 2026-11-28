@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from tinyseek.config import input_wh
+
 MAX_OBJECTS = 32
 
 
@@ -24,33 +26,38 @@ def encode_targets(
     boxes: np.ndarray,
     labels: np.ndarray,
     num_classes: int,
-    input_size: int,
+    input_size: int | list[int] | tuple[int, int],
     stride: int,
     max_objects: int = MAX_OBJECTS,
 ) -> dict[str, np.ndarray]:
-    """Encode (N, 4) xyxy input-pixel boxes into dense training targets."""
-    grid = input_size // stride
-    heatmap = np.zeros((num_classes, grid, grid), dtype=np.float32)
+    """Encode (N, 4) xyxy input-pixel boxes into dense training targets.
+
+    ``input_size`` is an int or (width, height); the heatmap is (classes, height // stride,
+    width // stride) and ``index`` is ``row * grid_width + column``.
+    """
+    in_w, in_h = input_wh(input_size)
+    grid_w, grid_h = in_w // stride, in_h // stride
+    heatmap = np.zeros((num_classes, grid_h, grid_w), dtype=np.float32)
     index = np.zeros(max_objects, dtype=np.int64)
     mask = np.zeros(max_objects, dtype=np.float32)
     size = np.zeros((max_objects, 2), dtype=np.float32)
     offset = np.zeros((max_objects, 2), dtype=np.float32)
 
-    ys, xs = np.mgrid[0:grid, 0:grid].astype(np.float32)
+    ys, xs = np.mgrid[0:grid_h, 0:grid_w].astype(np.float32)
     # Largest first so that when more than max_objects exist, the easy ones survive.
     order = np.argsort(-(boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]))
     for slot, i in enumerate(order[:max_objects]):
         x0, y0, x1, y1 = boxes[i] / stride
         w, h = x1 - x0, y1 - y0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        ix = int(np.clip(np.floor(cx), 0, grid - 1))
-        iy = int(np.clip(np.floor(cy), 0, grid - 1))
+        ix = int(np.clip(np.floor(cx), 0, grid_w - 1))
+        iy = int(np.clip(np.floor(cy), 0, grid_h - 1))
         sx, sy = gaussian_sigmas(w, h)
         g = np.exp(-((xs - ix) ** 2) / (2 * sx**2) - ((ys - iy) ** 2) / (2 * sy**2))
         c = int(labels[i])
         heatmap[c] = np.maximum(heatmap[c], g)
         heatmap[c, iy, ix] = 1.0
-        index[slot] = iy * grid + ix
+        index[slot] = iy * grid_w + ix
         mask[slot] = 1.0
         size[slot] = np.log(np.maximum([w, h], 1e-3))
         offset[slot] = (cx - ix, cy - iy)

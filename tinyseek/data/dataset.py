@@ -55,16 +55,17 @@ def to_tensor(image: Image.Image) -> torch.Tensor:
 
 
 class DetectionDataset(Dataset):
-    """Single-class detection samples, letterboxed to ``input_size``.
+    """Single-class detection samples, letterboxed to ``input_size`` (int, or [width, height]).
 
     In training mode, returns encoded CenterNet targets; in eval mode, returns the
     letterbox transform so predictions can be mapped back to original coordinates.
+    Image tensors are (3, height, width).
     """
 
     def __init__(
         self,
         records: list[Record],
-        input_size: int,
+        input_size: int | list[int] | tuple[int, int],
         stride: int,
         train: bool,
         augment_cfg: dict | None = None,

@@ -37,7 +37,14 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from tinyseek.config import fill, load_config, load_prompts, save_run_config, seed_everything
+from tinyseek.config import (
+    fill,
+    input_wh,
+    load_config,
+    load_prompts,
+    save_run_config,
+    seed_everything,
+)
 from tinyseek.data.dataset import DetectionDataset, Record, collate_eval
 from tinyseek.eval.evaluate import evaluate_all, predict
 from tinyseek.eval.metrics import coco_ap50
@@ -84,8 +91,9 @@ def module_path(op_name: str) -> str:
     return ".".join(parts[1:])
 
 
-def conv_bn_pairs(model: nn.Module, input_size: int) -> dict[str, str | None]:
+def conv_bn_pairs(model: nn.Module, input_size: int | list[int] | tuple[int, int]) -> dict[str, str | None]:
     """Every Conv2d's name -> the BatchNorm2d that consumes its output directly (or None)."""
+    in_w, in_h = input_wh(input_size)
     produced: dict[int, str] = {}
     pairs: dict[str, str | None] = {}
     hooks = []
@@ -105,7 +113,7 @@ def conv_bn_pairs(model: nn.Module, input_size: int) -> dict[str, str | None]:
     model.eval()
     try:
         with torch.no_grad():
-            model(torch.zeros(1, 3, input_size, input_size))
+            model(torch.zeros(1, 3, in_h, in_w))
     finally:
         for h in hooks:
             h.remove()
@@ -168,7 +176,8 @@ def calibration_records(cfg: dict, records: list[Record], calib_images: int) -> 
     return [records[i] for i in rng.choice(len(records), min(calib_images, len(records)), replace=False)]
 
 
-def quantize_like_export(model: nn.Module, calib: list[Record], size: int, target: str, scratch: Path):
+def quantize_like_export(model: nn.Module, calib: list[Record], size: int | list[int] | tuple[int, int],
+                         target: str, scratch: Path):
     """esp-ppq int8 graph built as tinyseek.train.export builds it; returns (graph, int16 ops)."""
     from esp_ppq import QuantizationSettingFactory
     from esp_ppq.api import espdl_quantize_torch, get_target_platform
@@ -177,6 +186,7 @@ def quantize_like_export(model: nn.Module, calib: list[Record], size: int, targe
 
     scratch.mkdir(parents=True, exist_ok=True)
     model.eval()
+    in_w, in_h = input_wh(size)
     loader = DataLoader(DetectionDataset(calib, size, model.stride, train=False), batch_size=1,
                         collate_fn=collate_eval)
 
@@ -185,7 +195,7 @@ def quantize_like_export(model: nn.Module, calib: list[Record], size: int, targe
         setting.equalization = True
         return espdl_quantize_torch(
             model=ExportWrapper(model), espdl_export_file=str(scratch / "model.espdl"),
-            calib_dataloader=loader, calib_steps=len(calib), input_shape=[1, 3, size, size],
+            calib_dataloader=loader, calib_steps=len(calib), input_shape=[1, 3, in_h, in_w],
             target=target, num_of_bits=8, collate_fn=lambda batch: batch["image"],
             dispatching_override={op: get_target_platform(target, "w16a16") for op in int16_ops},
             setting=setting, device="cpu", error_report=False, verbose=0, skip_export=True,
@@ -309,7 +319,7 @@ def split_dev(records: list[Record], dev_images: int, seed: int) -> tuple[list[R
     return train, dev
 
 
-def dev_ap(model, dev: list[Record], ann: str, category_id: int, size: int, ev: dict) -> float:
+def dev_ap(model, dev: list[Record], ann: str, category_id: int, size: int | list[int], ev: dict) -> float:
     with torch.no_grad():
         dets = predict(model, dev, size, torch.device("cpu"), ev["score_threshold"], ev["max_detections"],
                        batch_size=16, num_workers=4)
@@ -321,13 +331,15 @@ def exponent_moves(before: dict[str, list[int]], after: dict[str, list[int]]) ->
     return {k: [before[k], after[k]] for k in sorted(after) if k in before and before[k] != after[k]}
 
 
-def check_write_back(model: nn.Module, graph, pairs: dict[str, str | None], mcfg: dict, size: int) -> None:
+def check_write_back(model: nn.Module, graph, pairs: dict[str, str | None], mcfg: dict,
+                     size: int | list[int] | tuple[int, int]) -> None:
     """Raise unless writing the graph's float weights into a copy of ``model`` keeps its output."""
     check = build_model(dict(mcfg, pretrained=False))
     check.load_state_dict(model.state_dict())
     write_back(check, fused_from_graph(graph), pairs)
     check.eval()
-    x = torch.randn(2, 3, size, size)
+    in_w, in_h = input_wh(size)
+    x = torch.randn(2, 3, in_h, in_w)
     with torch.no_grad():
         err = (ExportWrapper(check)(x) - ExportWrapper(model)(x)).abs().max().item()
     if err > 1e-3:

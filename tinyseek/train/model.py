@@ -3,6 +3,11 @@
 Only ops that ESP-DL's quantizer handles are used: Conv, ReLU, Add, and nearest-neighbor
 2x upsampling. The heatmap is returned as logits; sigmoid and peak picking happen in
 post-processing (on device, only for cells above the logit threshold).
+
+The input is (B, 3, height, width); the two sides need not be equal, but each must be a
+multiple of 32 (tinyseek.config.INPUT_MULTIPLE, checked when a config is loaded): the
+stride-32 map is upsampled 2x twice and added to the stride-16 and stride-8 maps, which
+only have matching sizes then. The head output is (height / 8) x (width / 8).
 """
 
 from __future__ import annotations
