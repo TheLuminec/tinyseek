@@ -16,7 +16,9 @@ Card layout::
 
     /tinyseek/config.txt             key=value settings (firmware/detector/README.md)
     /tinyseek/models/<prompt>.espdl  one ESP-DL model per prompt; the prompt is the file name
-    /tinyseek/models/<prompt>.txt    its sidecar: input size, stride, exponents, mean/std,
+    /tinyseek/models/<prompt>.txt    its sidecar: input size (input_size for a square model,
+                                     input_width and input_height for a rectangular one),
+                                     stride, exponents, mean/std,
                                      score_threshold (decode, as in the PC evaluation),
                                      max_detections, detect_threshold (LED), provenance
     /tinyseek/replay/NNNNN.jpg       replay set (camera JPEGs, renamed in label-file order)
@@ -39,6 +41,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from tinyseek.config import fields_wh, size_fields
 from tinyseek.deploy.layout import write_kv
 
 CARD_DIR = "tinyseek"
@@ -142,10 +145,11 @@ def model_sidecar(prompt: str, run: Path, threshold: float | None) -> dict:
         detect, source = float(ev["detect_threshold"]), "config"
     else:
         detect, source = DEFAULT_DETECT_THRESHOLD, "default"
+    wh = fields_wh(meta)  # (width, height), from input_size or input_width/input_height
     info = {
         "prompt": prompt,
         "run": str(run),
-        "input_size": meta["input_size"],
+        **size_fields(wh),  # input_size for a square model, input_width + input_height otherwise
         "stride": meta["stride"],
         "num_classes": meta["num_classes"],
         "mean": ",".join(str(v) for v in meta["mean"]),
@@ -158,11 +162,10 @@ def model_sidecar(prompt: str, run: Path, threshold: float | None) -> dict:
     }
     if (run / "model.info").exists():
         from tinyseek.deploy.reference import io_bits
-        from tinyseek.deploy.stage import graph_io
+        from tinyseek.deploy.stage import check_io_shapes, graph_io
 
         inp, out = graph_io((run / "model.info").read_text())
-        if inp.shape != (1, meta["input_size"], meta["input_size"], 3):
-            raise SystemExit(f"{run}: model.info input {inp.shape} does not match input_size {meta['input_size']}")
+        check_io_shapes(run, inp, out, wh, meta["stride"])
         for dtype in (inp.dtype, out.dtype):
             io_bits(dtype)  # the board runs INT8 or INT16 I/O only
         info.update(input_exponent=inp.exponent, output_exponent=out.exponent, input_dtype=inp.dtype,
@@ -297,10 +300,11 @@ def main() -> None:
         sets["source"] = args.source
     m = stage(args.model, args.out, every, per, args.prompt, sets, args.replay_ann, args.replay_images,
               args.replay_limit, args.replay_category)
+    shown = ("prompt", "input_size", "input_width", "input_height", "input_exponent", "output_exponent",
+             "detect_threshold", "detect_threshold_source")
+    always = set(shown) - {"input_size", "input_width", "input_height"}  # a model has one size form
     summary = {"card": m["card"], "prompt": m["config"]["prompt"],
-               "models": [{k: x.get(k) for k in ("prompt", "input_size", "input_exponent", "output_exponent",
-                                                  "detect_threshold", "detect_threshold_source")}
-                          for x in m["models"]]}
+               "models": [{k: x.get(k) for k in shown if k in x or k in always} for x in m["models"]]}
     if "replay" in m:
         summary["replay"] = {"files": len(m["replay"]["files"]), "skipped": len(m["replay"]["skipped"]),
                              "category_id": m["replay"]["category_id"]}

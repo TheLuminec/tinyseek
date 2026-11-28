@@ -27,7 +27,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from tinyseek.config import fill, load_config, load_prompts
+from tinyseek.config import fields_wh, fill, load_config, load_prompts, size_fields
 from tinyseek.data.dataset import Record, load_coco_records
 from tinyseek.deploy.layout import CARD_ROOT, write_kv
 from tinyseek.deploy.reference import io_bits, model_input
@@ -58,6 +58,20 @@ def graph_io(info_text: str) -> tuple[TensorInfo, TensorInfo]:
         raise ValueError(f"no exponent listed for output {r[1]}")
     out = TensorInfo(r[1], tuple(int(v) for v in o[2].split("x")), o[1], int(o[3]))
     return inp, out
+
+
+def check_io_shapes(run: Path, inp: TensorInfo, out: TensorInfo, wh: tuple[int, int], stride: int) -> None:
+    """The exported graph's input must be [1, height, width, 3] for the size in model_meta.json.
+
+    For a rectangular input the output grid is checked too (height / stride rows, width /
+    stride columns), since a swapped pair would otherwise only show up as wrong boxes."""
+    w, h = wh
+    if inp.shape != (1, h, w, 3):
+        raise SystemExit(f"{run}: model.info input {inp.shape} does not match the {w}x{h} (width x height) "
+                         "input in model_meta.json")
+    if w != h and tuple(out.shape[1:3]) != (h // stride, w // stride):
+        raise SystemExit(f"{run}: model.info output {out.shape} is not a {h // stride}x{w // stride} "
+                         f"(rows x columns) grid for a {w}x{h} input at stride {stride}")
 
 
 def parse_model_arg(text: str) -> tuple[str, Path]:
@@ -111,9 +125,8 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
     cfg = load_config(run / "config.yaml")
     meta = json.loads((run / "model_meta.json").read_text())
     inp, out = graph_io((run / "model.info").read_text())
-    size = meta["input_size"]
-    if inp.shape != (1, size, size, 3):
-        raise SystemExit(f"{run}: model.info input {inp.shape} does not match input_size {size}")
+    size = fields_wh(meta)  # (width, height); the model's tensors are NHWC, height first
+    check_io_shapes(run, inp, out, size, meta["stride"])
     in_bits, out_bits = io_bits(inp.dtype), io_bits(out.dtype)  # int16 for a w16a16 export
     shutil.copyfile(run / "model.espdl", card / "models" / f"{name}.espdl")
     ev = cfg["eval"]
@@ -121,7 +134,7 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
         "name": name,
         "run": str(run),
         "prompt": meta["prompt"],
-        "input_size": size,
+        **size_fields(size),  # input_size (square) or input_width + input_height
         "stride": meta["stride"],
         "num_classes": meta["num_classes"],
         "mean": ",".join(str(v) for v in meta["mean"]),
@@ -168,7 +181,7 @@ def stage_model(name: str, run: Path, card: Path, expected: Path, cases: list[tu
     return info
 
 
-def _ppq_quantizes_like_us(sim, image: Image.Image, size: int, q_in: np.ndarray) -> bool:
+def _ppq_quantizes_like_us(sim, image: Image.Image, size: tuple[int, int], q_in: np.ndarray) -> bool:
     """The executor fed the float tensor must give the same output as fed our int8 tensor."""
     from tinyseek.data.dataset import to_tensor
     from tinyseek.data.transforms import letterbox
@@ -230,10 +243,10 @@ def main() -> None:
     bench = {"warmup": args.warmup, "runs": args.runs, "camera": args.camera,
              "camera_frames": args.camera_frames, "parity": args.parity}
     manifest = stage(args.model, args.out, args.eval_set, args.cases, not args.no_sim, bench)
+    shown = ("name", "input_size", "input_width", "input_height", "input_exponent", "output_exponent",
+             "simulated", "ppq_input_quantization_matches")
     print(json.dumps({k: manifest[k] for k in ("eval_set", "bench")} |
-                     {"models": [{k: m[k] for k in ("name", "input_size", "input_exponent", "output_exponent",
-                                                    "simulated", "ppq_input_quantization_matches")}
-                                 for m in manifest["models"]],
+                     {"models": [{k: m[k] for k in shown if k in m} for m in manifest["models"]],
                       "cases": len(manifest["cases"]), "card": str(args.out / "sdcard" / CARD_ROOT)}, indent=2))
 
 

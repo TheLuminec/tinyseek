@@ -166,3 +166,52 @@ def test_compare_int16_model(tmp_path):
     assert s["preprocess_exact"] == "1/1" and s["decode_identical"] == "2/2"
     assert s["model_output_exact"] == "0/1" and s["model_output_max_abs_lsb"] == 300
     assert len(dets) == 2 and report["bench"][0]["input_dtype"] == "INT16"
+
+
+def test_compare_rectangular_model(tmp_path):
+    """A staged 256x192 (width x height) model: stage.json has input_width/input_height, the
+    tensors are 192 rows x 256 columns and the grid is 24 rows x 32 columns."""
+    from tinyseek.config import size_fields
+    from tinyseek.data.transforms import Letterbox
+
+    rng = np.random.default_rng(3)
+    w, h, gw, gh = 256, 192, 32, 24
+    exp_in = rng.integers(-128, 127, w * h * 3).astype(np.int8)
+    q = np.full((gh, gw, 5), -100, np.int8)
+    q[..., 1:3], q[..., 3:] = 20, 8
+    q[4, 30, 0], q[20, 2, 0] = 50, 30  # column 30 does not exist in a 24-wide grid
+    stage = tmp_path / "stage"
+    exp = stage / "expected" / "r256"
+    exp.mkdir(parents=True)
+    exp_in.tofile(exp / "c000_in.bin")
+    q.tofile(exp / "c000_out.bin")
+    lb = [0.32, 0, 0]
+    (exp / "c000_float.json").write_text(json.dumps({"letterbox": lb, "detections": []}))
+    model = {"name": "r256", **size_fields([w, h]), "stride": 8, "num_classes": 1, "output_exponent": -4,
+             "score_threshold": 0.05, "max_detections": 20}
+    assert "input_size" not in model
+    (stage / "stage.json").write_text(json.dumps({"models": [model], "cases": [{"id": "c000"}]}))
+    res = tmp_path / "run_001"
+    board = res / "parity" / "r256"
+    board.mkdir(parents=True)
+    dets = decode_output(q, -4, Letterbox(*lb))
+    assert len(dets) == 2 and max(d.x + d.w / 2 for d in dets) > 700  # in 800x600 frame pixels
+    with (board / "dets.csv").open("w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(DETS_HEADER)
+        for path in ("rgb", "jpg"):
+            exp_in.tofile(board / f"c000_{path}_in.bin")
+            q.tofile(board / f"c000_{path}_out.bin")
+            for r, d in enumerate(dets):
+                wr.writerow(["r256", "c000", path, r, d.x, d.y, d.w, d.h, d.score, d.cls])
+    # The firmware writes a rectangular model's bench.csv input_size as WIDTHxHEIGHT.
+    (res / "bench.csv").write_text(BENCH_HEADER_IO + "\n" + ARDUINO_ROW.replace(",192,-6,", ",256x192,-6,")
+                                   + ",INT8,INT8\n")
+    report = compare(stage, res)
+    s = report["models"]["r256"]["summary"]
+    assert s["preprocess_exact"] == "1/1" and s["model_output_exact"] == "1/1" and s["decode_identical"] == "2/2"
+    assert s["rgb_dets_vs_sim_f1"] == 1.0
+    assert report["bench"][0]["input_size"] == "256x192"
+    # A board tensor of the square size is reported, not reshaped.
+    exp_in[: 192 * 192 * 3].tofile(board / "c000_rgb_in.bin")
+    assert compare(stage, res)["models"]["r256"]["cases"][0]["rgb"] == {"bad_size": [192 * 192 * 3, gw * gh * 5]}

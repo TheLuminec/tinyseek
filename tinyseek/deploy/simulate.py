@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from tinyseek.config import load_config, load_prompts
+from tinyseek.config import input_wh, load_config, load_prompts
 from tinyseek.data.dataset import DetectionDataset, collate_eval
 from tinyseek.deploy.reference import dequantize, quantize
 from tinyseek.train.export import exponent_violations
@@ -82,15 +82,21 @@ class SimulatedModel:
     executor: object
     input_exponent: int
     output_exponent: int
-    input_size: int
+    input_size: int | list[int]  # the run's model.input_size: an int, or [width, height]
     num_classes: int
     stride: int
     int16_ops: list[str]
     identical_to_deployed: bool
     bits: int = 8  # I/O tensor width: 16 for a w16a16 export (export.json "quant")
 
+    @property
+    def wh(self) -> tuple[int, int]:
+        """Input (width, height)."""
+        return input_wh(self.input_size)
+
     def run(self, q_in: np.ndarray) -> np.ndarray:
-        """(S, S, 3) int8 (int16) HWC input -> (G, G, C) int8 (int16) NHWC output, as the board should."""
+        """(H, W, 3) int8 (int16) HWC input -> (H/stride, W/stride, C) int8 (int16) NHWC output,
+        as the board should."""
         x = torch.from_numpy(dequantize(q_in, self.input_exponent).transpose(2, 0, 1).copy())[None]
         out = self.executor(x)[0][0].detach().numpy()  # (C, G, G), already fake-quantized
         return quantize(out.transpose(1, 2, 0), self.output_exponent, self.bits)
@@ -112,6 +118,7 @@ def rebuild(run: Path, scratch: Path, calib_images: int = 512, target: str = "es
     cfg = load_config(run / "config.yaml")
     mcfg = cfg["model"]
     size = mcfg["input_size"]
+    in_w, in_h = input_wh(size)
     model = build_model(dict(mcfg, pretrained=False))
     model.load_state_dict(torch.load(run / "last.pt", map_location="cpu")["model"])
     model.eval()
@@ -133,7 +140,7 @@ def rebuild(run: Path, scratch: Path, calib_images: int = 512, target: str = "es
         setting.equalization = True
         return espdl_quantize_torch(
             model=ExportWrapper(model), espdl_export_file=str(out_file), calib_dataloader=loader,
-            calib_steps=len(calib), input_shape=[1, 3, size, size], target=target, num_of_bits=bits,
+            calib_steps=len(calib), input_shape=[1, 3, in_h, in_w], target=target, num_of_bits=bits,
             collate_fn=lambda batch: batch["image"],
             dispatching_override={op: get_target_platform(target, "w16a16") for op in int16_ops},
             setting=setting, device="cpu", error_report=False, verbose=0,

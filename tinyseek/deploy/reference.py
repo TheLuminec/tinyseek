@@ -16,8 +16,9 @@ import numpy as np
 import torch
 from PIL import Image
 
+from tinyseek.config import input_wh
 from tinyseek.data.dataset import to_tensor
-from tinyseek.data.transforms import Letterbox, letterbox
+from tinyseek.data.transforms import Letterbox, letterbox, letterbox_geometry
 from tinyseek.train.targets import decode
 
 
@@ -49,28 +50,26 @@ def dequantize(q: np.ndarray, exponent: int) -> np.ndarray:
     return q.astype(np.float32) * np.float32(2.0**exponent)
 
 
-def model_input(image: Image.Image, size: int, exponent: int, bits: int = 8,
-                pad_value: int = 114) -> tuple[np.ndarray, Letterbox]:
-    """(size, size, 3) int8 (bits=16: int16) HWC input for one RGB frame, plus its letterbox.
+Size = int | list[int] | tuple[int, int]  # model input: an int (square) or (width, height)
 
-    ``pad_value`` is the letterbox fill as a uint8 pixel (the sidecar's pad_value; the PC
-    evaluation always uses 114)."""
+
+def model_input(image: Image.Image, size: Size, exponent: int, bits: int = 8,
+                pad_value: int = 114) -> tuple[np.ndarray, Letterbox]:
+    """(height, width, 3) int8 (bits=16: int16) HWC input for one RGB frame, plus its letterbox.
+
+    ``size`` is the model input, an int or (width, height). ``pad_value`` is the letterbox
+    fill as a uint8 pixel (the sidecar's pad_value; the PC evaluation always uses 114)."""
     image = image.convert("RGB")
     canvas, lb = letterbox(image, size)
     if pad_value != 114:
-        nw, nh = _resized_size(image.width, image.height, size)
-        arr = np.full((size, size, 3), pad_value, np.uint8)
+        in_w, in_h = input_wh(size)
+        _, nw, nh, _, _ = letterbox_geometry(image.width, image.height, size)
+        arr = np.full((in_h, in_w, 3), pad_value, np.uint8)
         box = (slice(lb.pad_y, lb.pad_y + nh), slice(lb.pad_x, lb.pad_x + nw))
         arr[box] = np.asarray(canvas)[box]
         canvas = Image.fromarray(arr)
     chw = to_tensor(canvas).numpy()
     return quantize(chw.transpose(1, 2, 0), exponent, bits), lb
-
-
-def _resized_size(w: int, h: int, size: int) -> tuple[int, int]:
-    """The letterboxed image's size inside the canvas, as tinyseek.data.transforms.letterbox."""
-    scale = size / max(w, h)
-    return max(1, round(w * scale)), max(1, round(h * scale))
 
 
 def io_bits(dtype: str) -> int:
@@ -193,27 +192,27 @@ def bilinear_resize(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     return ((v + 32768) >> 16).astype(np.uint8)
 
 
-def preprocess_rgb(rgb: np.ndarray, size: int, exponent: int, resample: str = "pillow",
+def preprocess_rgb(rgb: np.ndarray, size: Size, exponent: int, resample: str = "pillow",
                    bits: int = 8, pad_value: int = 114) -> tuple[np.ndarray, Letterbox]:
-    """Decoded frame -> (size, size, 3) int8 (or int16) HWC input and its letterbox (rgb's pixels)."""
+    """Decoded frame -> (height, width, 3) int8 (or int16) HWC input and its letterbox (rgb's pixels)."""
     if resample == "pillow":
         return model_input(Image.fromarray(rgb), size, exponent, bits, pad_value)
     if resample != "bilinear":
         raise ValueError(f"resample must be one of {RESAMPLES}, got {resample!r}")
     h, w = rgb.shape[:2]
-    scale = size / max(w, h)
-    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
-    pad_x, pad_y = round((size - nw) * 0.5), round((size - nh) * 0.5)
-    canvas = np.full((size, size, 3), pad_value, np.uint8)
+    in_w, in_h = input_wh(size)
+    scale, nw, nh, pad_x, pad_y = letterbox_geometry(w, h, size)
+    canvas = np.full((in_h, in_w, 3), pad_value, np.uint8)
     canvas[pad_y : pad_y + nh, pad_x : pad_x + nw] = bilinear_resize(rgb, nw, nh)
     chw = to_tensor(Image.fromarray(canvas)).numpy()
     return quantize(chw.transpose(1, 2, 0), exponent, bits), Letterbox(scale=scale, pad_x=pad_x, pad_y=pad_y)
 
 
-def board_input(jpeg: Path | str | bytes, size: int, exponent: int,
+def board_input(jpeg: Path | str | bytes, size: Size, exponent: int,
                 mode: BoardMode | str = "full", bits: int = 8) -> tuple[np.ndarray, Letterbox]:
     """The int8 (bits=16: int16, for w16a16 models) HWC tensor the detector feeds ESP-DL.
 
+    ``size`` is the model input, an int or (width, height); the tensor is (height, width, 3).
     Returns the tensor and the letterbox in the JPEG's own (full-frame) pixels, so
     ``decode_output(q_out, out_exp, lb)`` gives boxes in frame coordinates, exactly as the
     board reports them. ``mode`` is a BoardMode or its name ("full", "half_bilinear", ...);
@@ -236,7 +235,7 @@ MAX_LOG_WH = 16.0
 
 
 def nhwc_to_heads(out: np.ndarray, num_classes: int) -> dict[str, torch.Tensor]:
-    """(G, G, C) float output in NHWC -> the NCHW head dict ``decode`` takes."""
+    """(grid_h, grid_w, C) float output in NHWC -> the NCHW head dict ``decode`` takes."""
     t = torch.from_numpy(np.ascontiguousarray(out.transpose(2, 0, 1)))[None].float()
     c = num_classes
     return {"heatmap": t[:, :c], "size": t[:, c : c + 2], "offset": t[:, c + 2 : c + 4]}
@@ -251,7 +250,8 @@ def decode_output(
     score_threshold: float = 0.05,
     max_detections: int = 20,
 ) -> list[Detection]:
-    """Board-format int8 or int16 output (G, G, C) -> detections in original pixels, as ``predict`` does."""
+    """Board-format int8 or int16 output (grid_h, grid_w, C) -> detections in original pixels,
+    as ``predict`` does. The grid need not be square; the letterbox has one scale for both axes."""
     heads = nhwc_to_heads(dequantize(q_out, exponent), num_classes)
     size = heads["size"].clamp(max=MAX_LOG_WH)
     boxes, scores, classes = decode(heads["heatmap"], size, heads["offset"], stride, max_detections)

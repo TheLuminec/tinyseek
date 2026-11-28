@@ -6,12 +6,14 @@ import argparse
 
 import numpy as np
 import pytest
+from PIL import Image
 
+from tinyseek.config import fields_wh, size_fields
 from tinyseek.data.dataset import Record
 from tinyseek.deploy.layout import read_kv, write_kv
-from tinyseek.deploy.reference import dequantize, quantize
+from tinyseek.deploy.reference import dequantize, model_input, preprocess_rgb, quantize
 from tinyseek.deploy.simulate import info_signature
-from tinyseek.deploy.stage import graph_io, parse_model_arg, pick_cases
+from tinyseek.deploy.stage import TensorInfo, check_io_shapes, graph_io, parse_model_arg, pick_cases
 
 INFO = """model properties:
 
@@ -121,3 +123,54 @@ def test_parse_model_arg_validates_card_names(tmp_path):
 def test_kv_roundtrip(tmp_path):
     write_kv(tmp_path / "a.txt", {"runs": 50, "mean": "0.485,0.456,0.406"})
     assert read_kv(tmp_path / "a.txt") == {"runs": "50", "mean": "0.485,0.456,0.406"}
+
+
+# --- rectangular model inputs (2026-11-28) -------------------------------------------------------
+
+def test_reference_input_tensor_is_rows_by_columns():
+    """model_input for a (width, height) size: (height, width, 3), no padding for a 4:3 frame."""
+    img = Image.fromarray(np.random.default_rng(9).integers(0, 256, (600, 800, 3), dtype=np.uint8))
+    q, lb = model_input(img, (256, 192), -6)
+    assert q.shape == (192, 256, 3) and q.dtype == np.int8 and (lb.scale, lb.pad_x, lb.pad_y) == (0.32, 0, 0)
+    q16, lb16 = model_input(img, [288, 224], -13, bits=16)
+    assert q16.shape == (224, 288, 3) and q16.dtype == np.int16 and (lb16.scale, lb16.pad_x, lb16.pad_y) == (0.36, 0, 4)
+    square, _ = model_input(img, 192, -6)
+    assert np.array_equal(model_input(img, (192, 192), -6)[0], square)
+    # At 192x192 the top 24 rows are padding (one colour); at 256x192 the picture starts at row 0.
+    assert len(np.unique(square[:24].reshape(-1, 3), axis=0)) == 1 and len(np.unique(q[:24].reshape(-1, 3), axis=0)) > 1
+    # Other pad values and the fast resample take the same geometry.
+    q0, _ = model_input(img, (288, 224), -6, pad_value=0)
+    qb, lbb = preprocess_rgb(np.asarray(img), (288, 224), -6, "bilinear")
+    assert q0.shape == qb.shape == (224, 288, 3) and (lbb.scale, lbb.pad_x, lbb.pad_y) == (0.36, 0, 4)
+    assert len(np.unique(q0[:4].reshape(-1, 3), axis=0)) == 1 and not np.array_equal(q0[:4], qb[:4])
+    assert np.array_equal(q0[4:220], model_input(img, (288, 224), -6)[0][4:220])
+
+
+def test_stage_checks_graph_shape_against_the_size():
+    """model.info is NHWC: [1, height, width, 3] and a (height / stride) x (width / stride) grid."""
+    inp = TensorInfo("input.1", (1, 192, 256, 3), "INT8", -6)
+    out = TensorInfo("641", (1, 24, 32, 5), "INT8", -4)
+    check_io_shapes("run", inp, out, (256, 192), 8)
+    with pytest.raises(SystemExit):
+        check_io_shapes("run", inp, out, (192, 256), 8)  # width and height swapped
+    with pytest.raises(SystemExit):
+        check_io_shapes("run", inp, TensorInfo("641", (1, 32, 24, 5), "INT8", -4), (256, 192), 8)
+    sq_in, sq_out = TensorInfo("input.1", (1, 192, 192, 3), "INT8", -6), TensorInfo("641", (1, 24, 24, 5), "INT8", -4)
+    check_io_shapes("run", sq_in, sq_out, (192, 192), 8)
+    with pytest.raises(SystemExit):
+        check_io_shapes("run", sq_in, sq_out, (128, 128), 8)
+    rect_info = INFO.replace("1x192x192x3", "1x224x288x3").replace("1x24x24x5", "1x28x36x5")
+    inp, out = graph_io(rect_info)
+    assert (inp.shape, out.shape) == ((1, 224, 288, 3), (1, 28, 36, 5))
+    check_io_shapes("run", inp, out, (288, 224), 8)
+
+
+def test_sidecar_size_keys_old_and_new(tmp_path):
+    """The key=value sidecar: a file staged before rectangular inputs and a new one both read back."""
+    (tmp_path / "old.txt").write_text("prompt=backpack\ninput_size=192\nstride=8\n")
+    assert fields_wh(read_kv(tmp_path / "old.txt")) == (192, 192)
+    write_kv(tmp_path / "square.txt", {"prompt": "backpack", **size_fields(192), "stride": 8})
+    assert (tmp_path / "square.txt").read_text() == "prompt=backpack\ninput_size=192\nstride=8\n"
+    write_kv(tmp_path / "rect.txt", {"prompt": "backpack", **size_fields([256, 192]), "stride": 8})
+    assert (tmp_path / "rect.txt").read_text() == "prompt=backpack\ninput_width=256\ninput_height=192\nstride=8\n"
+    assert fields_wh(read_kv(tmp_path / "rect.txt")) == (256, 192)

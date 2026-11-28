@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
+from tinyseek.config import fields_wh
 from tinyseek.data.transforms import Letterbox
 from tinyseek.deploy.layout import read_kv
 from tinyseek.deploy.reference import Detection, decode_output
@@ -103,7 +104,8 @@ def load(path: Path, dtype: str = "INT8") -> np.ndarray | None:
 
 
 def compare_case(model: dict, case_id: str, expected: Path, board: Path, dets: dict) -> dict:
-    size, grid = int(model["input_size"]), int(model["input_size"]) // int(model["stride"])
+    in_w, in_h = fields_wh(model)  # input_size, or input_width/input_height for a rectangular model
+    grid_w, grid_h = in_w // int(model["stride"]), in_h // int(model["stride"])
     nc, out_exp = int(model["num_classes"]), int(model["output_exponent"])
     ch = nc + 4
     fl = json.loads((expected / f"{case_id}_float.json").read_text())
@@ -113,7 +115,7 @@ def compare_case(model: dict, case_id: str, expected: Path, board: Path, dets: d
     res: dict = {"case": case_id}
     in_dt, out_dt = model.get("input_dtype", "INT8"), model.get("output_dtype", "INT8")
     exp_in, exp_out = load(expected / f"{case_id}_in.bin", in_dt), load(expected / f"{case_id}_out.bin", out_dt)
-    sim_dets = decode_output(exp_out.reshape(grid, grid, ch), out_exp, lb, **kw) if exp_out is not None else None
+    sim_dets = decode_output(exp_out.reshape(grid_h, grid_w, ch), out_exp, lb, **kw) if exp_out is not None else None
     floats = [Detection(*d["bbox"], d["score"]) for d in fl["detections"]]
     if sim_dets is not None:
         res["sim_vs_float"] = match(floats, sim_dets)
@@ -125,14 +127,14 @@ def compare_case(model: dict, case_id: str, expected: Path, board: Path, dets: d
         if b_in is None or b_out is None:
             res[path] = {"missing": True}
             continue
-        if b_in.size != size * size * 3 or b_out.size != grid * grid * ch:
+        if b_in.size != in_w * in_h * 3 or b_out.size != grid_w * grid_h * ch:
             res[path] = {"bad_size": [int(b_in.size), int(b_out.size)]}
             continue
         r["input"] = tensor_diff(b_in, exp_in)
         if exp_out is not None:
             r["output"] = tensor_diff(b_out, exp_out)
         board_dets = dets.get((case_id, path), [])
-        pc_decode = decode_output(b_out.reshape(grid, grid, ch), out_exp, lb, **kw)
+        pc_decode = decode_output(b_out.reshape(grid_h, grid_w, ch), out_exp, lb, **kw)
         r["decode_identical"] = decode_identical(pc_decode, board_dets)
         if sim_dets is not None:
             r["dets_vs_sim"] = match(sim_dets, board_dets)

@@ -5,7 +5,9 @@ Card (copy ``<stage>/sdcard/tinyseek_eval`` to the card root)::
     /tinyseek_eval/bench.txt            key=value benchmark settings
     /tinyseek_eval/bench.jpg            one 800x600 camera frame (preprocess / JPEG timing)
     /tinyseek_eval/models/<m>.espdl     one model per file; <m> is a short name (px192)
-    /tinyseek_eval/models/<m>.txt       key=value model metadata (decode settings, source)
+    /tinyseek_eval/models/<m>.txt       key=value model metadata (decode settings, source; the
+                                        input is input_size=S for a square model, or
+                                        input_width=W and input_height=H for a rectangular one)
     /tinyseek_eval/parity/cases.txt     one case id per line
     /tinyseek_eval/parity/<id>.jpg      the camera JPEG
     /tinyseek_eval/parity/<id>.rgb      the same frame decoded on the PC (RGB888, row-major)
